@@ -5,10 +5,7 @@ import jwt from "jsonwebtoken";
 
 const TOKEN_URL = "https://lichess.org/api/token";
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const clientId = process.env.LICHESS_CLIENT_ID;
   const redirectUri = process.env.LICHESS_REDIRECT_URI;
   const sessionSecret = process.env.SESSION_SECRET;
@@ -27,27 +24,24 @@ export default async function handler(
     return res.status(400).json({ error: "Invalid query params" });
   }
 
-  // 2. Read cookies (state + PKCE verifier)
+  // 2. Read cookies set in /api/auth/lichess/start
   const cookiesObj = cookie.parse(req.headers.cookie || "");
   const storedState = cookiesObj["lichess_state"];
   const codeVerifier = cookiesObj["lichess_code_verifier"];
 
   if (!codeVerifier) {
-    console.error("Missing code_verifier cookie");
-    return res
-      .status(400)
-      .send('Token error: {"error":"invalid_request","error_description":"code_verifier missing"}');
+    console.error("Missing PKCE code_verifier cookie");
+    return res.status(400).send("Token error: missing PKCE verifier, please try again");
   }
 
-  // Optional: strict state check (for now we log but don't block)
-  if (!storedState || state !== storedState) {
+  // Optional: state check (softened for early stage)
+  if (storedState && state !== storedState) {
     console.warn("OAuth state mismatch", {
       queryState: state,
       storedState,
       cookies: req.headers.cookie,
     });
-
-    // For production hardening later, you should:
+    // For stricter security later:
     // return res.status(400).json({ error: "Invalid OAuth state" });
   }
 
@@ -57,7 +51,7 @@ export default async function handler(
     cookie.serialize("lichess_code_verifier", "", { path: "/", maxAge: 0 }),
   ]);
 
-  // 4. Exchange code for access token (with PKCE)
+  // 4. Exchange code for access token
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
@@ -74,7 +68,7 @@ export default async function handler(
 
   if (!tokenRes.ok) {
     const text = await tokenRes.text();
-    console.error("Token error:", text);
+    console.error("Token error from Lichess:", text);
     return res.status(500).send("Token error: " + text);
   }
 
@@ -93,7 +87,7 @@ export default async function handler(
 
   if (!accountRes.ok) {
     const text = await accountRes.text();
-    console.error("Account error:", text);
+    console.error("Account error from Lichess:", text);
     return res.status(500).send("Account error: " + text);
   }
 
@@ -106,18 +100,19 @@ export default async function handler(
     accessToken,
   };
 
-  // 7. Sign JWT and set HttpOnly cookie
+  // 7. Sign JWT
   const token = jwt.sign(sessionPayload, sessionSecret, { expiresIn: "7d" });
 
+  // 8. Set HttpOnly session cookie
   const sessionCookie = cookie.serialize("session", token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 7 * 24 * 60 * 60,
+    maxAge: 7 * 24 * 60 * 60, // 7 days
   });
 
   res.setHeader("Set-Cookie", sessionCookie);
 
-  // 8. Redirect back to home
+  // 9. Redirect back to home
   return res.redirect(302, "/");
 }

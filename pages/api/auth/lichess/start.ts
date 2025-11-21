@@ -5,61 +5,57 @@ import crypto from "crypto";
 
 const AUTH_URL = "https://lichess.org/oauth";
 
-function base64url(buf: Buffer) {
-  return buf
+function base64UrlEncode(buffer: Buffer): string {
+  return buffer
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const clientId = process.env.LICHESS_CLIENT_ID;
   const redirectUri = process.env.LICHESS_REDIRECT_URI;
 
   if (!clientId || !redirectUri) {
     console.error("Missing Lichess env vars");
-    return res
-      .status(500)
-      .json({ error: "Lichess OAuth not configured correctly" });
+    return res.status(500).json({ error: "Lichess OAuth not configured" });
   }
 
-  // 1) Generate state & PKCE code_verifier / code_challenge
-  const state = base64url(crypto.randomBytes(16));
-  const codeVerifier = base64url(crypto.randomBytes(32));
-  const codeChallenge = base64url(
+  // 1) Generate state + PKCE verifier/challenge
+  const state = base64UrlEncode(crypto.randomBytes(32));
+  const codeVerifier = base64UrlEncode(crypto.randomBytes(32));
+
+  const codeChallenge = base64UrlEncode(
     crypto.createHash("sha256").update(codeVerifier).digest()
   );
 
-  // 2) Store them in HttpOnly cookies
-  const cookies = [
-    cookie.serialize("lichess_state", state, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 10 * 60, // 10 minutes
-    }),
-    cookie.serialize("lichess_code_verifier", codeVerifier, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 10 * 60,
-    }),
-  ];
+  const cookieOptions = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: 10 * 60, // 10 minutes
+  };
 
-  res.setHeader("Set-Cookie", cookies);
+  // 2) Store state + code_verifier in cookies
+  res.setHeader("Set-Cookie", [
+    cookie.serialize("lichess_state", state, cookieOptions),
+    cookie.serialize("lichess_code_verifier", codeVerifier, cookieOptions),
+  ]);
 
-  // 3) Redirect to Lichess OAuth authorization endpoint
+  // 3) Redirect to Lichess OAuth
   const params = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: "board:play challenge:read challenge:write", // or whatever you need
+    scope: "account:read", // or whatever you need
     state,
-    code_challenge_method: "S256",
     code_challenge: codeChallenge,
+    code_challenge_method: "S256",
   });
 
-  const url = `${AUTH_URL}?${params.toString()}`;
-  return res.redirect(302, url);
+  const redirectUrl = `${AUTH_URL}?${params.toString()}`;
+
+  return res.redirect(302, redirectUrl);
 }
