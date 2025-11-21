@@ -13,13 +13,21 @@ function base64UrlEncode(buffer: Buffer): string {
     .replace(/=+$/g, "");
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
   const clientId = process.env.LICHESS_CLIENT_ID;
   const redirectUri = process.env.LICHESS_REDIRECT_URI;
 
   if (!clientId || !redirectUri) {
-    console.error("Missing Lichess env vars");
-    return res.status(500).json({ error: "Lichess OAuth not configured" });
+    console.error("[lichess start] Missing Lichess env vars", {
+      clientIdPresent: !!clientId,
+      redirectUriPresent: !!redirectUri,
+    });
+    return res
+      .status(500)
+      .json({ error: "Lichess OAuth not configured on the server" });
   }
 
   // 1) Generate state + PKCE verifier/challenge
@@ -49,13 +57,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: "account:read", // or whatever you need
+    // NOTE: we intentionally omit `scope` to avoid invalid_scope errors in prod.
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
   });
 
   const redirectUrl = `${AUTH_URL}?${params.toString()}`;
+  console.log("[lichess start] Redirecting to:", redirectUrl);
 
   return res.redirect(302, redirectUrl);
 }
