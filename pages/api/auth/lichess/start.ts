@@ -1,53 +1,65 @@
 // pages/api/auth/lichess/start.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { generateRandomString, sha256Base64Url } from "@/lib/pkce";
 import cookie from "cookie";
+import crypto from "crypto";
 
-const LICHESS_AUTH_URL = "https://lichess.org/oauth";
+const AUTH_URL = "https://lichess.org/oauth";
+
+function base64url(buf: Buffer) {
+  return buf
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  console.log("LICHESS_CLIENT_ID =", process.env.LICHESS_CLIENT_ID);
-  console.log("LICHESS_REDIRECT_URL =", process.env.LICHESS_REDIRECT_URL);
-
   const clientId = process.env.LICHESS_CLIENT_ID;
   const redirectUri = process.env.LICHESS_REDIRECT_URI;
 
   if (!clientId || !redirectUri) {
+    console.error("Missing Lichess env vars");
     return res
       .status(500)
-      .json({ error: "Lichess OAuth is not configured correctly" });
+      .json({ error: "Lichess OAuth not configured correctly" });
   }
 
-  const state = generateRandomString(32);
-  const codeVerifier = generateRandomString(64);
-  const codeChallenge = sha256Base64Url(codeVerifier);
+  // 1) Generate state & PKCE code_verifier / code_challenge
+  const state = base64url(crypto.randomBytes(16));
+  const codeVerifier = base64url(crypto.randomBytes(32));
+  const codeChallenge = base64url(
+    crypto.createHash("sha256").update(codeVerifier).digest()
+  );
 
-  // set cookies for callback
-  res.setHeader("Set-Cookie", [
+  // 2) Store them in HttpOnly cookies
+  const cookies = [
     cookie.serialize("lichess_state", state, {
       httpOnly: true,
-      secure: false, // set true in production (https)
+      secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 300,
+      maxAge: 10 * 60, // 10 minutes
     }),
     cookie.serialize("lichess_code_verifier", codeVerifier, {
       httpOnly: true,
-      secure: false, // set true in production
+      secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 300,
+      maxAge: 10 * 60,
     }),
-  ]);
+  ];
 
+  res.setHeader("Set-Cookie", cookies);
+
+  // 3) Redirect to Lichess OAuth authorization endpoint
   const params = new URLSearchParams({
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    scope: "", // add scopes if needed
+    scope: "board:play challenge:read challenge:write", // or whatever you need
     state,
-    code_challenge: codeChallenge,
     code_challenge_method: "S256",
+    code_challenge: codeChallenge,
   });
 
-  const url = `${LICHESS_AUTH_URL}?${params.toString()}`;
-  res.redirect(302, url);
+  const url = `${AUTH_URL}?${params.toString()}`;
+  return res.redirect(302, url);
 }
