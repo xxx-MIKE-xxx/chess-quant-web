@@ -29,6 +29,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const storedState = cookiesObj["lichess_state"];
   const codeVerifier = cookiesObj["lichess_code_verifier"];
 
+  console.log("[lichess callback] raw cookies:", req.headers.cookie);
+  console.log("[lichess callback] query state:", state);
+  console.log(
+    "[lichess callback] storedState & codeVerifier:",
+    storedState,
+    codeVerifier ? "(present)" : "(missing)"
+  );
+
   if (!codeVerifier) {
     console.error("Missing PKCE code_verifier cookie");
     return res.status(400).send("Token error: missing PKCE verifier, please try again");
