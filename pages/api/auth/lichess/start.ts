@@ -6,6 +6,9 @@ import cookie from "cookie";
 const LICHESS_AUTH_URL = "https://lichess.org/oauth";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
+  console.log("LICHESS_CLIENT_ID =", process.env.LICHESS_CLIENT_ID);
+  console.log("LICHESS_REDIRECT_URL =", process.env.LICHESS_REDIRECT_URL);
+
   const clientId = process.env.LICHESS_CLIENT_ID;
   const redirectUri = process.env.LICHESS_REDIRECT_URI;
 
