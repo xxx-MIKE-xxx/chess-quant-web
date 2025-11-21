@@ -300,28 +300,43 @@ export default function HomePage() {
 
 
         {/* Example Pro-only feature slot */}
+        {/* Example Pro-only feature slot */}
         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
-        <FeatureCard
-          title="Deep Pro analytics"
-          description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
-          cta={
-            !stripeReady
-              ? "Pro coming soon"
-              : !user
-              ? "Login to upgrade"
-              : isPro
-              ? "You already have Pro ✅"
-              : checkoutLoading
-              ? "Opening Stripe…"
-              : "Upgrade to Pro"
-          }
-        
-          onClick={startCheckout}
-          disabled={!user || checkoutLoading || !stripeReady || isPro}
-          pro
-        />
+          <div className="flex flex-col gap-2">
+            <FeatureCard
+              title="Deep Pro analytics"
+              description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
+              cta={
+                !stripeReady
+                  ? "Pro coming soon"
+                  : !user
+                  ? "Login to upgrade"
+                  : isPro
+                  ? "You already have Pro ✅"
+                  : checkoutLoading
+                  ? "Opening Stripe…"
+                  : "Upgrade to Pro"
+              }
+              onClick={startCheckout}
+              disabled={!user || checkoutLoading || !stripeReady || isPro}
+              pro
+            />
 
+            {isPro && stripeReady && (
+              <button
+                type="button"
+                onClick={openBillingPortal}
+                disabled={billingLoading}
+                className="self-start text-xs text-neutral-300 underline-offset-2 hover:underline disabled:opacity-60"
+              >
+                {billingLoading
+                  ? "Opening billing…"
+                  : "Manage subscription"}
+              </button>
+            )}
+          </div>
         </ProGate>
+
       </div>
 
       {/* Stripe disabled message */}
