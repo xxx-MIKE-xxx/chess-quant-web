@@ -22,28 +22,31 @@ export default async function handler(
   }
 
   const sig = req.headers["stripe-signature"];
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-  if (!sig || Array.isArray(sig) || !webhookSecret) {
-    console.error(
-      "[stripe-webhook] Missing signature or STRIPE_WEBHOOK_SECRET"
-    );
-    return res.status(400).send("Webhook signature missing");
+  if (!sig || Array.isArray(sig)) {
+    return res.status(400).send("Missing Stripe signature");
   }
 
   let event: Stripe.Event;
 
   try {
     const buf = await getRawBody(req);
-    event = stripe.webhooks.constructEvent(buf, sig, webhookSecret);
-  } catch (err: any) {
-    console.error(
-      "[stripe-webhook] Signature verification failed:",
-      err.message
+    event = stripe.webhooks.constructEvent(
+      buf,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET!
     );
+  } catch (err: any) {
+    console.error("Webhook signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // --- Idempotency: skip already-processed events ---
+  const eventsRef = db.collection("stripeWebhookEvents").doc(event.id);
+  const existing = await eventsRef.get();
+  if (existing.exists) {
+    console.log("[stripe-webhook] Duplicate event, skipping:", event.id);
+    return res.json({ received: true, duplicate: true });
+  }
 
   try {
     switch (event.type) {
@@ -82,13 +85,118 @@ export default async function handler(
           { merge: true }
         );
 
+        console.log(
+          "[stripe-webhook] checkout.session.completed → set isPro=true for",
+          username
+        );
+        break;
+      }
+
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as Stripe.Subscription;
+
+        const customerId =
+          typeof subscription.customer === "string"
+            ? subscription.customer
+            : subscription.customer?.id;
+        const subscriptionId = subscription.id;
+        const status = subscription.status;
+
+        const isActive = status === "active" || status === "trialing";
+
+        const usersRef = db.collection("users");
+        let snap = await usersRef
+          .where("stripeSubscriptionId", "==", subscriptionId)
+          .limit(1)
+          .get();
+
+        if (snap.empty && customerId) {
+          snap = await usersRef
+            .where("stripeCustomerId", "==", customerId)
+            .limit(1)
+            .get();
+        }
+
+        if (!snap.empty) {
+          const doc = snap.docs[0];
+          await doc.ref.set(
+            {
+              isPro: isActive,
+              stripeSubscriptionId: subscriptionId,
+              stripeCustomerId: customerId ?? null,
+            },
+            { merge: true }
+          );
+          console.log(
+            "[stripe-webhook] customer.subscription.updated → isPro=",
+            isActive,
+            "for user doc",
+            doc.id
+          );
+        } else {
+          console.warn(
+            "[stripe-webhook] subscription.updated: no user found for",
+            { subscriptionId, customerId }
+          );
+        }
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object as Stripe.Subscription;
+
+        const customerId =
+          typeof subscription.customer === "string"
+            ? subscription.customer
+            : subscription.customer?.id;
+        const subscriptionId = subscription.id;
+
+        const usersRef = db.collection("users");
+        let snap = await usersRef
+          .where("stripeSubscriptionId", "==", subscriptionId)
+          .limit(1)
+          .get();
+
+        if (snap.empty && customerId) {
+          snap = await usersRef
+            .where("stripeCustomerId", "==", customerId)
+            .limit(1)
+            .get();
+        }
+
+        if (!snap.empty) {
+          const doc = snap.docs[0];
+          await doc.ref.set(
+            {
+              isPro: false,
+              stripeSubscriptionId: null,
+            },
+            { merge: true }
+          );
+          console.log(
+            "[stripe-webhook] customer.subscription.deleted → isPro=false for user doc",
+            doc.id
+          );
+        } else {
+          console.warn(
+            "[stripe-webhook] subscription.deleted: no user found for",
+            { subscriptionId, customerId }
+          );
+        }
         break;
       }
 
       default:
         // ignore other events for now
+        console.log("[stripe-webhook] Ignoring event type", event.type);
         break;
     }
+
+    // mark event as processed (idempotency)
+    await eventsRef.set({
+      processedAt: Date.now(),
+      type: event.type,
+    });
 
     return res.json({ received: true });
   } catch (e: any) {

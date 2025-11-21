@@ -39,6 +39,8 @@ export default function HomePage() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPro, setIsPro] = useState(false);
+  const [billingLoading, setBillingLoading] = useState(false); 
+
 
   // Stripe enabled in this build?
   const stripeReady = !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
@@ -157,6 +159,40 @@ export default function HomePage() {
     }
   }
 
+
+  async function openBillingPortal() {
+    if (!user) return;
+
+    try {
+      setBillingLoading(true);
+      setError(null);
+
+      const res = await fetch("/api/billing/portal", {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        console.error("Billing portal error", res.status);
+        const text = await res.text();
+        setError(text || "Unable to open billing portal");
+        return;
+      }
+
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setError("No billing portal URL returned from server");
+      }
+    } catch (e) {
+      console.error("openBillingPortal failed:", e);
+      setError("Failed to open billing portal");
+    } finally {
+      setBillingLoading(false);
+    }
+  }
+
+
   async function runTiltAnalysis() {
     if (!user) return;
 
@@ -247,33 +283,44 @@ export default function HomePage() {
 
       {/* Feature cards */}
       <div className="mt-4 w-full max-w-2xl grid gap-4 md:grid-cols-2">
-        <FeatureCard
-          title="Tilt check"
-          description="Analyze your recent games and measure your emotional tilt."
-          cta={loadingTilt ? "Calculating..." : "Check my tilt"}
-          onClick={runTiltAnalysis}
-          disabled={loadingTilt || !user}
-          pro={false}
-        />
+      <FeatureCard
+        title="Tilt check"
+        description="Analyze your recent games and measure your emotional tilt."
+        cta={
+          !user
+            ? "Login to run tilt"
+            : loadingTilt
+            ? "Calculating..."
+            : "Check my tilt"
+        }
+        onClick={runTiltAnalysis}
+        disabled={loadingTilt || !user}
+        pro={false}
+      />
+
 
         {/* Example Pro-only feature slot */}
         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
-          <FeatureCard
-            title="Deep Pro analytics"
-            description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
-            cta={
-              !stripeReady
-                ? "Pro coming soon"
-                : isPro
-                ? "You already have Pro ✅"
-                : checkoutLoading
-                ? "Opening Stripe…"
-                : "Upgrade to Pro"
-            }
-            onClick={startCheckout}
-            disabled={!user || checkoutLoading || !stripeReady || isPro}
-            pro
-          />
+        <FeatureCard
+          title="Deep Pro analytics"
+          description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
+          cta={
+            !stripeReady
+              ? "Pro coming soon"
+              : !user
+              ? "Login to upgrade"
+              : isPro
+              ? "You already have Pro ✅"
+              : checkoutLoading
+              ? "Opening Stripe…"
+              : "Upgrade to Pro"
+          }
+        
+          onClick={startCheckout}
+          disabled={!user || checkoutLoading || !stripeReady || isPro}
+          pro
+        />
+
         </ProGate>
       </div>
 
