@@ -1,13 +1,14 @@
 // pages/api/stripe-webhook.ts
 import type { NextApiRequest, NextApiResponse } from "next";
-import { buffer } from "micro";
+import getRawBody from "raw-body";
 import type Stripe from "stripe";
 import { stripe } from "@/lib/stripe";
 import { db } from "@/lib/firebaseAdmin";
 
 export const config = {
   api: {
-    bodyParser: false, // Stripe needs the raw body
+    // We need the raw body for Stripe signature verification
+    bodyParser: false,
   },
 };
 
@@ -16,18 +17,19 @@ export default async function handler(
   res: NextApiResponse
 ) {
   if (req.method !== "POST") {
+    res.setHeader("Allow", "POST");
     return res.status(405).send("Method not allowed");
   }
 
   const sig = req.headers["stripe-signature"];
-  if (!sig) {
+  if (!sig || Array.isArray(sig)) {
     return res.status(400).send("Missing Stripe signature");
   }
 
-  const buf = await buffer(req);
   let event: Stripe.Event;
 
   try {
+    const buf = await getRawBody(req);
     event = stripe.webhooks.constructEvent(
       buf,
       sig,
@@ -78,8 +80,8 @@ export default async function handler(
         break;
       }
 
-      // Later we can handle subscription.updated / deleted here too
       default:
+        // ignore other events for now
         break;
     }
 

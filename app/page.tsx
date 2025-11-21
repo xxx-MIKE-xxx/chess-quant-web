@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { posthog } from "@/lib/posthogClient";
-import { ProGate } from "@/components/ProGate";
 import { ProBadge } from "@/components/ProBadge";
-import { useUserDashboard } from "@/lib/hooks/useUserDashboard";
+import { ProGate } from "@/components/ProGate";
+import { FeatureCard } from "@/components/FeatureCard";
 
 type User = {
   lichessId: string;
@@ -40,18 +40,19 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [isPro, setIsPro] = useState(false);
 
-  // Stripe enabled?
+  // Stripe enabled in this build?
   const stripeReady = !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 
-  // 1) Load session on mount, then dashboard if logged in
+  // Load session + dashboard on mount
   useEffect(() => {
-    async function loadUser() {
+    async function loadUserAndDashboard() {
       try {
         const res = await fetch("/api/me");
         if (!res.ok) {
           setUser(null);
           return;
         }
+
         const data = await res.json();
         const u: User = data.user ?? null;
         setUser(u);
@@ -69,7 +70,7 @@ export default function HomePage() {
       }
     }
 
-    loadUser();
+    loadUserAndDashboard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -204,22 +205,19 @@ export default function HomePage() {
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center gap-6 bg-black text-white px-4">
-      <h1 className="text-3xl font-bold">Chess Quant</h1>
+      {/* Title */}
+      <h1 className="text-3xl font-bold flex items-center gap-2">
+        Chess Quant
+        {isPro && <ProBadge />}
+      </h1>
 
       {/* Auth status */}
       <div className="flex flex-col items-center gap-2">
         {user ? (
           <>
-            <div className="flex items-center gap-2">
-              <p className="text-sm text-green-400">
-                Logged in as <strong>{user.lichessUsername}</strong>
-              </p>
-              {isPro && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-400 text-black font-semibold">
-                  PRO
-                </span>
-              )}
-            </div>
+            <p className="text-sm text-green-400">
+              Logged in as <strong>{user.lichessUsername}</strong>
+            </p>
             <button
               onClick={logout}
               className="px-3 py-1 rounded bg-neutral-800 text-xs border border-neutral-600 hover:bg-neutral-700"
@@ -237,39 +235,45 @@ export default function HomePage() {
         )}
       </div>
 
-      {/* Main actions */}
-      <div className="flex flex-col items-center gap-3">
-        {/* Tilt button */}
-        <button
+      {/* Feature cards */}
+      <div className="mt-4 w-full max-w-2xl grid gap-4 md:grid-cols-2">
+        <FeatureCard
+          title="Tilt check"
+          description="Analyze your recent games and measure your emotional tilt."
+          cta={loadingTilt ? "Calculating..." : "Check my tilt"}
           onClick={runTiltAnalysis}
-          className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
           disabled={loadingTilt || !user}
-        >
-          {loadingTilt ? "Calculating..." : "Check my tilt"}
-        </button>
+          pro={false}
+        />
 
-        {/* Stripe / Upgrade button */}
-        <button
-          onClick={startCheckout}
-          className="px-4 py-2 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 text-sm"
-          disabled={!user || checkoutLoading || !stripeReady || isPro}
-        >
-          {!stripeReady
-            ? "Pro coming soon"
-            : isPro
-            ? "You’re Chess Quant Pro ✅"
-            : checkoutLoading
-            ? "Opening Stripe…"
-            : "Upgrade to Chess Quant Pro"}
-        </button>
-
-        {!stripeReady && (
-          <p className="text-[11px] text-neutral-400 max-w-xs text-center">
-            Payments are disabled in this dev build. You can still use tilt
-            analysis freely.
-          </p>
-        )}
+        {/* Example Pro-only feature slot */}
+        <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
+          <FeatureCard
+            title="Deep Pro analytics"
+            description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
+            cta={
+              !stripeReady
+                ? "Pro coming soon"
+                : isPro
+                ? "You already have Pro ✅"
+                : checkoutLoading
+                ? "Opening Stripe…"
+                : "Upgrade to Pro"
+            }
+            onClick={startCheckout}
+            disabled={!user || checkoutLoading || !stripeReady || isPro}
+            pro
+          />
+        </ProGate>
       </div>
+
+      {/* Stripe disabled message */}
+      {!stripeReady && (
+        <p className="text-[11px] text-neutral-400 max-w-xs text-center">
+          Payments are disabled in this build. You can still use tilt analysis
+          freely.
+        </p>
+      )}
 
       {/* Status / errors */}
       {error && <p className="text-red-500 text-sm mt-2">Error: {error}</p>}
