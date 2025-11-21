@@ -133,11 +133,12 @@ export default function HomePage() {
       });
 
       if (!res.ok) {
-        console.error("Checkout error", res.status);
         const text = await res.text();
-        setError(text || "Stripe checkout error");
+        console.error("Checkout error", res.status, text);
+        setError("Unable to start checkout. Please try again in a moment.");
         return;
       }
+
 
       const data = await res.json();
       if (data.url) {
@@ -183,7 +184,12 @@ export default function HomePage() {
           errorText: text.slice(0, 500),
         });
 
-        throw new Error(`API error ${res.status}: ${text}`);
+        const genericMessage =
+          res.status === 500 || res.status === 503
+            ? "Tilt analysis is temporarily unavailable. Please try again in a minute."
+            : "Something went wrong while checking your tilt. Please try again.";
+
+        throw new Error(genericMessage);
       }
 
       const data = await res.json();
@@ -197,11 +203,15 @@ export default function HomePage() {
 
       await loadDashboard();
     } catch (err: any) {
-      setError(err?.message ?? "Unknown error");
+      setError(
+        err?.message ??
+          "Something went wrong while checking your tilt. Please try again."
+      );
     } finally {
       setLoadingTilt(false);
     }
   }
+
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center gap-6 bg-black text-white px-4">

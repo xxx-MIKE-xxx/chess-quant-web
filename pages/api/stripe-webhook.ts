@@ -22,23 +22,28 @@ export default async function handler(
   }
 
   const sig = req.headers["stripe-signature"];
-  if (!sig || Array.isArray(sig)) {
-    return res.status(400).send("Missing Stripe signature");
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!sig || Array.isArray(sig) || !webhookSecret) {
+    console.error(
+      "[stripe-webhook] Missing signature or STRIPE_WEBHOOK_SECRET"
+    );
+    return res.status(400).send("Webhook signature missing");
   }
 
   let event: Stripe.Event;
 
   try {
     const buf = await getRawBody(req);
-    event = stripe.webhooks.constructEvent(
-      buf,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET!
-    );
+    event = stripe.webhooks.constructEvent(buf, sig, webhookSecret);
   } catch (err: any) {
-    console.error("Webhook signature verification failed:", err.message);
+    console.error(
+      "[stripe-webhook] Signature verification failed:",
+      err.message
+    );
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
+
 
   try {
     switch (event.type) {

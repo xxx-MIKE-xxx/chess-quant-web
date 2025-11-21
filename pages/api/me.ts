@@ -23,7 +23,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   const rawCookieHeader = req.headers.cookie || "";
   const cookiesObj = cookie.parse(rawCookieHeader);
 
-  console.log("[/api/me] Incoming cookies:", rawCookieHeader);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[/api/me] session cookie present:", "session" in cookiesObj);
+  }
 
   const token = cookiesObj["session"];
   if (!token) {

@@ -116,9 +116,7 @@ export default async function handler(
       const text = await tiltRes.text();
       console.error("[/api/tilt] tilt_score error:", tiltRes.status, text);
       return res.status(500).json({
-        error: "tilt_score error",
-        status: tiltRes.status,
-        details: text,
+        error: "Tilt analysis temporarily unavailable. Please try again in a minute.",
       });
     }
 

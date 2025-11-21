@@ -56,8 +56,6 @@ export default async function handler(
   const storedState = cookiesObj["lichess_state"];
   const codeVerifier = cookiesObj["lichess_code_verifier"];
 
-  console.log("[lichess callback] raw cookies:", req.headers.cookie);
-  console.log("[lichess callback] query state:", state);
   console.log(
     "[lichess callback] storedState & codeVerifier:",
     storedState,
@@ -72,14 +70,19 @@ export default async function handler(
   }
 
   // Optional: state check (softened for early stage)
-  if (storedState && state !== storedState) {
+  if (!storedState || state !== storedState) {
     console.warn("[lichess callback] OAuth state mismatch", {
       queryState: state,
       storedState,
-      cookies: req.headers.cookie,
     });
-    // Later, tighten this:
-    // return res.status(400).json({ error: "Invalid OAuth state" });
+  
+    // Clear cookies to force a clean restart next time
+    res.setHeader("Set-Cookie", [
+      cookie.serialize("lichess_state", "", { path: "/", maxAge: 0 }),
+      cookie.serialize("lichess_code_verifier", "", { path: "/", maxAge: 0 }),
+    ]);
+  
+    return res.status(400).json({ error: "Invalid OAuth state" });
   }
 
   // 3. Clear temporary OAuth cookies

@@ -1,23 +1,25 @@
-// pages/api/auth/logout.ts
+// pages/api/auth/lichess/logout.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import cookie from "cookie";
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Clear the session cookie
-  res.setHeader(
-    "Set-Cookie",
-    cookie.serialize("session", "", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: 0, // delete cookie
-    })
-  );
+  const base = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: 0,
+  };
 
-  return res.status(200).json({ ok: true });
+  res.setHeader("Set-Cookie", [
+    cookie.serialize("session", "", base),
+    cookie.serialize("lichess_state", "", base),
+    cookie.serialize("lichess_code_verifier", "", base),
+  ]);
+
+  return res.redirect(302, "/");
 }
