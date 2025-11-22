@@ -118,12 +118,14 @@ export default function HomePage() {
     setError(null);
   }
 
+
+
   async function manageBilling() {
     if (!user) return;
     if (!stripeReady) return;
 
     try {
-      setCheckoutLoading(true);
+      setCheckoutLoading(true); // Reusing checkout loading state for UI feedback
 
       const res = await fetch("/api/billing/portal", {
         method: "POST",
@@ -134,20 +136,23 @@ export default function HomePage() {
         const text = await res.text();
         console.error("Billing portal error", res.status, text);
         setError(text || "Failed to open billing portal");
+        setCheckoutLoading(false); // Only unset on error
         return;
       }
 
       const data = await res.json();
       if (data.url) {
-        // Open in a NEW TAB so the app stays open in the original tab
-        window.open(data.url, "_blank", "noopener,noreferrer");
+        // FIX: Use location.href instead of window.open
+        // This ensures the "Return" button in Stripe brings them back here 
+        // and triggers a page reload to refresh Pro status.
+        window.location.href = data.url;
       } else {
         setError("No billing portal URL returned from server");
+        setCheckoutLoading(false);
       }
     } catch (e) {
       console.error("manageBilling failed:", e);
       setError("Failed to open billing portal");
-    } finally {
       setCheckoutLoading(false);
     }
   }
