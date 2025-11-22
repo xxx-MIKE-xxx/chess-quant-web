@@ -120,12 +120,14 @@ export default function HomePage() {
 
 
 
+  // app/page.tsx
+
   async function manageBilling() {
     if (!user) return;
     if (!stripeReady) return;
 
     try {
-      setCheckoutLoading(true); // Reusing checkout loading state for UI feedback
+      setCheckoutLoading(true);
 
       const res = await fetch("/api/billing/portal", {
         method: "POST",
@@ -136,23 +138,23 @@ export default function HomePage() {
         const text = await res.text();
         console.error("Billing portal error", res.status, text);
         setError(text || "Failed to open billing portal");
-        setCheckoutLoading(false); // Only unset on error
         return;
       }
 
       const data = await res.json();
       if (data.url) {
-        // FIX: Use location.href instead of window.open
-        // This ensures the "Return" button in Stripe brings them back here 
-        // and triggers a page reload to refresh Pro status.
+        // FIX: Use current window so the "Return" button brings them back here
+        // and refreshes the page state.
         window.location.href = data.url;
       } else {
         setError("No billing portal URL returned from server");
-        setCheckoutLoading(false);
       }
     } catch (e) {
       console.error("manageBilling failed:", e);
       setError("Failed to open billing portal");
+    } finally {
+      // If we redirect, this state change technically doesn't matter, 
+      // but it's good practice in case redirect fails.
       setCheckoutLoading(false);
     }
   }

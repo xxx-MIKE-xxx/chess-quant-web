@@ -31,7 +31,6 @@ export default async function handler(
   const token = cookiesObj["session"];
 
   if (!token) {
-    console.warn("[/api/billing/portal] No session cookie");
     return res.status(401).json({ error: "Not logged in" });
   }
 
@@ -39,23 +38,14 @@ export default async function handler(
   try {
     payload = jwt.verify(token, sessionSecret) as SessionPayload;
   } catch (err: any) {
-    console.error("[/api/billing/portal] JWT verify failed:", {
-      message: err?.message,
-      name: err?.name,
-    });
     return res.status(401).json({ error: "Invalid session" });
   }
 
   try {
-    // Look up user in Firestore to find Stripe customer id
     const userRef = db.collection("users").doc(payload.lichessUsername);
     const snap = await userRef.get();
 
     if (!snap.exists) {
-      console.warn(
-        "[/api/billing/portal] No Firestore user for",
-        payload.lichessUsername
-      );
       return res.status(404).json({ error: "User not found" });
     }
 
@@ -63,30 +53,42 @@ export default async function handler(
     const customerId: string | undefined = data?.stripeCustomerId;
 
     if (!customerId) {
-      console.warn(
-        "[/api/billing/portal] User has no stripeCustomerId; cannot open portal"
-      );
       return res
         .status(400)
         .json({ error: "No Stripe customer found for this user" });
     }
 
-    const origin =
-      (req.headers.origin as string | undefined) ??
-      process.env.NEXT_PUBLIC_APP_URL ??
-      "https://chess-quant-web.vercel.app";
+    // --- FIX STARTS HERE ---
+    // Robustly determine the current domain (localhost or production)
+    // 1. Try configured ENV var first
+    // 2. Try Origin header (client browser usually sends this)
+    // 3. Fallback to Host header (reliable server-side) + Protocol
+    let returnUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+    if (!returnUrl) {
+      const origin = req.headers.origin;
+      if (origin) {
+        returnUrl = origin;
+      } else {
+        // Construct from host if origin is missing
+        const host = req.headers.host;
+        const proto = req.headers["x-forwarded-proto"] || "http";
+        returnUrl = `${proto}://${host}`;
+      }
+    }
+
+    // Ensure no trailing slash to avoid double slashes if you append paths later
+    returnUrl = returnUrl.replace(/\/$/, "");
+    // --- FIX ENDS HERE ---
 
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: origin, // where "Return to Chess Quant" will send them
+      return_url: returnUrl, // Now correctly points to localhost or vercel url
     });
 
     return res.status(200).json({ url: portalSession.url });
   } catch (err: any) {
-    console.error("[/api/billing/portal] Unexpected error:", {
-      message: err?.message,
-      stack: err?.stack,
-    });
+    console.error("[/api/billing/portal] Unexpected error:", err);
     return res.status(500).json({
       error: "Failed to create billing portal session",
       details: err?.message ?? String(err),
