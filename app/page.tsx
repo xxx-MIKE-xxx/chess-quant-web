@@ -118,6 +118,42 @@ export default function HomePage() {
     setError(null);
   }
 
+  async function manageBilling() {
+    if (!user) return;
+    if (!stripeReady) return;
+
+    try {
+      setCheckoutLoading(true);
+
+      const res = await fetch("/api/billing/portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("Billing portal error", res.status, text);
+        setError(text || "Failed to open billing portal");
+        return;
+      }
+
+      const data = await res.json();
+      if (data.url) {
+        // Open in a NEW TAB so the app stays open in the original tab
+        window.open(data.url, "_blank", "noopener,noreferrer");
+      } else {
+        setError("No billing portal URL returned from server");
+      }
+    } catch (e) {
+      console.error("manageBilling failed:", e);
+      setError("Failed to open billing portal");
+    } finally {
+      setCheckoutLoading(false);
+    }
+  }
+
+
+
   async function startCheckout() {
     if (!user) return;
 
@@ -302,39 +338,32 @@ export default function HomePage() {
         {/* Example Pro-only feature slot */}
         {/* Example Pro-only feature slot */}
         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
-          <div className="flex flex-col gap-2">
-            <FeatureCard
-              title="Deep Pro analytics"
-              description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
-              cta={
-                !stripeReady
-                  ? "Pro coming soon"
-                  : !user
-                  ? "Login to upgrade"
-                  : isPro
-                  ? "You already have Pro ✅"
-                  : checkoutLoading
-                  ? "Opening Stripe…"
-                  : "Upgrade to Pro"
-              }
-              onClick={startCheckout}
-              disabled={!user || checkoutLoading || !stripeReady || isPro}
-              pro
-            />
-
-            {isPro && stripeReady && (
-              <button
-                type="button"
-                onClick={openBillingPortal}
-                disabled={billingLoading}
-                className="self-start text-xs text-neutral-300 underline-offset-2 hover:underline disabled:opacity-60"
-              >
-                {billingLoading
+          <FeatureCard
+            title="Deep Pro analytics"
+            description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
+            cta={
+              !stripeReady
+                ? "Pro coming soon"
+                : !user
+                ? "Log in to upgrade"
+                : checkoutLoading
+                ? isPro
                   ? "Opening billing…"
-                  : "Manage subscription"}
-              </button>
-            )}
-          </div>
+                  : "Opening Stripe…"
+                : isPro
+                ? "Manage subscription"
+                : "Upgrade to Pro"
+            }
+            onClick={
+              !stripeReady || !user
+                ? undefined
+                : isPro
+                ? manageBilling
+                : startCheckout
+            }
+            disabled={!user || checkoutLoading || !stripeReady}
+            pro
+          />
         </ProGate>
 
       </div>

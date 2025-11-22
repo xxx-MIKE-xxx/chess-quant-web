@@ -26,12 +26,12 @@ export default async function handler(
     return res.status(500).json({ error: "Server misconfigured" });
   }
 
-  const rawCookieHeader = req.headers.cookie || "";
-  const cookiesObj = cookie.parse(rawCookieHeader);
+  const rawCookie = req.headers.cookie || "";
+  const cookiesObj = cookie.parse(rawCookie);
   const token = cookiesObj["session"];
 
   if (!token) {
-    console.warn("[/api/billing/portal] No session cookie found");
+    console.warn("[/api/billing/portal] No session cookie");
     return res.status(401).json({ error: "Not logged in" });
   }
 
@@ -39,45 +39,57 @@ export default async function handler(
   try {
     payload = jwt.verify(token, sessionSecret) as SessionPayload;
   } catch (err: any) {
-    console.error("[/api/billing/portal] JWT verify failed:", err?.message);
+    console.error("[/api/billing/portal] JWT verify failed:", {
+      message: err?.message,
+      name: err?.name,
+    });
     return res.status(401).json({ error: "Invalid session" });
   }
 
-  const username = payload.lichessUsername;
-
   try {
-    const userRef = db.collection("users").doc(username);
+    // Look up user in Firestore to find Stripe customer id
+    const userRef = db.collection("users").doc(payload.lichessUsername);
     const snap = await userRef.get();
 
     if (!snap.exists) {
-      console.warn("[/api/billing/portal] User doc not found for", username);
+      console.warn(
+        "[/api/billing/portal] No Firestore user for",
+        payload.lichessUsername
+      );
       return res.status(404).json({ error: "User not found" });
     }
 
-    const userData = snap.data() as any;
-    const customerId = userData?.stripeCustomerId as string | undefined;
+    const data = snap.data() as any;
+    const customerId: string | undefined = data?.stripeCustomerId;
 
     if (!customerId) {
       console.warn(
-        "[/api/billing/portal] No stripeCustomerId for user",
-        username
+        "[/api/billing/portal] User has no stripeCustomerId; cannot open portal"
       );
-      return res.status(400).json({
-        error: "No Stripe customer associated with this user",
-      });
+      return res
+        .status(400)
+        .json({ error: "No Stripe customer found for this user" });
     }
 
-    const returnBase =
-      process.env.NEXT_PUBLIC_APP_URL || "https://chess-quant-web.vercel.app";
+    const origin =
+      (req.headers.origin as string | undefined) ??
+      process.env.NEXT_PUBLIC_APP_URL ??
+      "https://chess-quant-web.vercel.app";
 
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: `${returnBase}/`,
+      return_url: origin, // where "Return to Chess Quant" will send them
     });
 
     return res.status(200).json({ url: portalSession.url });
-  } catch (e: any) {
-    console.error("[/api/billing/portal] Error creating portal session:", e);
-    return res.status(500).json({ error: "Failed to create billing portal" });
+  } catch (err: any) {
+    console.error("[/api/billing/portal] Unexpected error:", {
+      message: err?.message,
+      stack: err?.stack,
+    });
+    return res.status(500).json({
+      error: "Failed to create billing portal session",
+      details: err?.message ?? String(err),
+    });
   }
 }
