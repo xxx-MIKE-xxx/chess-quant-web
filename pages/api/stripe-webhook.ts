@@ -12,6 +12,53 @@ export const config = {
   },
 };
 
+async function markUserAsCanceledByStripeIds(params: {
+  customerId?: string | null;
+  subscriptionId?: string | null;
+}) {
+  const { customerId, subscriptionId } = params;
+  if (!customerId && !subscriptionId) return;
+
+  const users = db.collection("users");
+  let snap: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+
+  if (customerId) {
+    const byCustomer = await users
+      .where("stripeCustomerId", "==", customerId)
+      .limit(1)
+      .get();
+    if (!byCustomer.empty) {
+      snap = byCustomer.docs[0];
+    }
+  }
+
+  if (!snap && subscriptionId) {
+    const bySub = await users
+      .where("stripeSubscriptionId", "==", subscriptionId)
+      .limit(1)
+      .get();
+    if (!bySub.empty) {
+      snap = bySub.docs[0];
+    }
+  }
+
+  if (!snap) {
+    console.warn("[stripe-webhook] No user found for cancelled subscription", {
+      customerId,
+      subscriptionId,
+    });
+    return;
+  }
+
+  await snap.ref.set(
+    {
+      isPro: false,
+      stripeSubscriptionId: subscriptionId ?? null,
+    },
+    { merge: true }
+  );
+}
+
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse
@@ -59,7 +106,7 @@ export default async function handler(
 
         if (!username) {
           console.warn(
-            "checkout.session.completed without username",
+            "[stripe-webhook] checkout.session.completed without username",
             session.id
           );
           break;
