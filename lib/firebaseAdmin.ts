@@ -61,6 +61,7 @@ export async function getUserDashboard(username: string) {
 
   const userData = userSnap.data() || {};
 
+  // ... (keep your existing tiltHistory logic) ...
   const resultsSnap = await userRef
     .collection("tiltResults")
     .orderBy("createdAt", "desc")
@@ -86,8 +87,10 @@ export async function getUserDashboard(username: string) {
       lastTiltAt: userData.lastTiltAt?.toDate
         ? userData.lastTiltAt.toDate().toISOString()
         : null,
-      isPro:
-        typeof userData.isPro === "boolean" ? userData.isPro : null,
+      isPro: typeof userData.isPro === "boolean" ? userData.isPro : null,
+      
+      // --- NEW: Send the flag to the frontend ---
+      cancelAtPeriodEnd: !!userData.cancelAtPeriodEnd, 
     },
     tiltHistory,
   };

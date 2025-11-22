@@ -141,29 +141,32 @@ export default async function handler(
 
       case "customer.subscription.updated": {
         const subscription = event.data.object as Stripe.Subscription;
-
+      
         const customerId =
           typeof subscription.customer === "string"
             ? subscription.customer
             : subscription.customer?.id;
         const subscriptionId = subscription.id;
         const status = subscription.status;
-
+      
         const isActive = status === "active" || status === "trialing";
-
+        
+        // --- NEW: Capture the cancellation intent ---
+        const cancelAtPeriodEnd = subscription.cancel_at_period_end; 
+      
         const usersRef = db.collection("users");
         let snap = await usersRef
           .where("stripeSubscriptionId", "==", subscriptionId)
           .limit(1)
           .get();
-
+      
         if (snap.empty && customerId) {
           snap = await usersRef
             .where("stripeCustomerId", "==", customerId)
             .limit(1)
             .get();
         }
-
+      
         if (!snap.empty) {
           const doc = snap.docs[0];
           await doc.ref.set(
@@ -171,20 +174,18 @@ export default async function handler(
               isPro: isActive,
               stripeSubscriptionId: subscriptionId,
               stripeCustomerId: customerId ?? null,
+              // --- NEW: Save it to Firestore ---
+              cancelAtPeriodEnd: cancelAtPeriodEnd, 
             },
             { merge: true }
           );
           console.log(
-            "[stripe-webhook] customer.subscription.updated → isPro=",
-            isActive,
-            "for user doc",
-            doc.id
+            "[stripe-webhook] updated:", doc.id,
+            "| isPro:", isActive,
+            "| cancelsEnd:", cancelAtPeriodEnd
           );
         } else {
-          console.warn(
-            "[stripe-webhook] subscription.updated: no user found for",
-            { subscriptionId, customerId }
-          );
+          console.warn("[stripe-webhook] No user found for sub update");
         }
         break;
       }

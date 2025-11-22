@@ -23,6 +23,7 @@ type DashboardProfile = {
   lastTiltScore: number | null;
   lastTiltAt: string | null;
   isPro: boolean | null;
+  cancelAtPeriodEnd?: boolean;
 };
 
 type DashboardData = {
@@ -40,6 +41,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [isPro, setIsPro] = useState(false);
   const [billingLoading, setBillingLoading] = useState(false); 
+  const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
 
 
   // Stripe enabled in this build?
@@ -93,6 +95,10 @@ export default function HomePage() {
       );
       setTiltHistory(data.tiltHistory || []);
       setIsPro(!!data.profile.isPro);
+      
+      // NEW: Set the cancellation state from the backend
+      setCancelAtPeriodEnd(!!data.profile.cancelAtPeriodEnd);
+      
     } catch (e) {
       console.error("Error loading dashboard:", e);
     } finally {
@@ -297,7 +303,13 @@ export default function HomePage() {
       {/* Title */}
       <h1 className="text-3xl font-bold flex items-center gap-2">
         Chess Quant
-        {isPro && <ProBadge />}
+        {/* LOGIC: Show Badge if active, 'Ends Soon' if canceling */}
+        {isPro && !cancelAtPeriodEnd && <ProBadge />}
+        {isPro && cancelAtPeriodEnd && (
+          <span className="bg-yellow-600/80 border border-yellow-500 text-white text-xs px-2 py-0.5 rounded ml-2 select-none">
+            Ends Soon
+          </span>
+        )}
       </h1>
 
       {/* Auth status */}
@@ -326,24 +338,22 @@ export default function HomePage() {
 
       {/* Feature cards */}
       <div className="mt-4 w-full max-w-2xl grid gap-4 md:grid-cols-2">
-      <FeatureCard
-        title="Tilt check"
-        description="Analyze your recent games and measure your emotional tilt."
-        cta={
-          !user
-            ? "Login to run tilt"
-            : loadingTilt
-            ? "Calculating..."
-            : "Check my tilt"
-        }
-        onClick={runTiltAnalysis}
-        disabled={loadingTilt || !user}
-        pro={false}
-      />
+        <FeatureCard
+          title="Tilt check"
+          description="Analyze your recent games and measure your emotional tilt."
+          cta={
+            !user
+              ? "Login to run tilt"
+              : loadingTilt
+              ? "Calculating..."
+              : "Check my tilt"
+          }
+          onClick={runTiltAnalysis}
+          disabled={loadingTilt || !user}
+          pro={false}
+        />
 
-
-        {/* Example Pro-only feature slot */}
-        {/* Example Pro-only feature slot */}
+        {/* Pro-only feature slot */}
         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
           <FeatureCard
             title="Deep Pro analytics"
@@ -372,7 +382,6 @@ export default function HomePage() {
             pro
           />
         </ProGate>
-
       </div>
 
       {/* Stripe disabled message */}
