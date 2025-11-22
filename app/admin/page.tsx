@@ -1,10 +1,9 @@
-// app/admin/page.tsx
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import cookie from "cookie";
 import jwt from "jsonwebtoken";
 import { db } from "@/lib/firebaseAdmin";
-import { SendAlertButton } from "./AdminButtons";
+import { SendAlertButton, SendEmailButton } from "./AdminButtons"; // Ensure these are imported
 
 // 1. Helper to verify Admin status on the server
 async function getAdminUser() {
@@ -40,7 +39,7 @@ export default async function AdminPage() {
     redirect("/"); // Kick them out if not admin
   }
 
-  // 3. Fetch ALL users (Generic SaaS requirement)
+  // 3. Fetch ALL users
   const usersSnap = await db
     .collection("users")
     .orderBy("createdAt", "desc")
@@ -62,22 +61,22 @@ export default async function AdminPage() {
   });
 
   return (
-    <main className="min-h-screen bg-neutral-950 text-white p-8">
+    <main className="min-h-screen bg-background text-foreground p-8">
       <div className="max-w-6xl mx-auto">
-        <header className="mb-8 border-b border-neutral-800 pb-4 flex justify-between items-center">
+        <header className="mb-8 border-b border-border pb-4 flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-white">God Mode</h1>
-            <p className="text-neutral-400 text-sm">System Overview</p>
+            <h1 className="text-2xl font-bold text-primary">God Mode</h1>
+            <p className="text-muted-foreground text-sm">System Overview</p>
           </div>
-          <div className="text-right text-xs text-neutral-500">
-            Admin: <span className="text-green-400">{adminUser.username}</span>
+          <div className="text-right text-xs text-muted-foreground">
+            Admin: <span className="text-foreground font-bold">{adminUser.username}</span>
           </div>
         </header>
 
-        {/* Generic User Table */}
-        <div className="bg-neutral-900/50 rounded-lg border border-neutral-800 overflow-hidden">
+        {/* User Table */}
+        <div className="bg-card border border-border rounded-lg overflow-hidden shadow-sm">
           <table className="w-full text-left text-sm">
-            <thead className="bg-neutral-800 text-neutral-300 font-medium">
+            <thead className="bg-secondary/50 text-muted-foreground font-medium">
               <tr>
                 <th className="p-4">Username</th>
                 <th className="p-4">Status</th>
@@ -86,34 +85,35 @@ export default async function AdminPage() {
                 <th className="p-4 text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-800">
+            <tbody className="divide-y divide-border">
               {users.map((u) => (
                 <tr
                   key={u.id}
-                  className="hover:bg-neutral-800/50 transition-colors"
+                  className="hover:bg-secondary/30 transition-colors"
                 >
-                  <td className="p-4 font-medium text-white">{u.username}</td>
+                  <td className="p-4 font-medium text-foreground">{u.username}</td>
                   <td className="p-4">
                     {u.isPro ? (
                       u.cancelAtPeriodEnd ? (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-900/30 text-yellow-400 border border-yellow-800">
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-500 border border-yellow-500/20">
                           Ends Soon
                         </span>
                       ) : (
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-900/30 text-green-400 border border-green-800">
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-primary/10 text-primary border border-primary/20">
                           Pro Active
                         </span>
                       )
                     ) : (
-                      <span className="text-neutral-500">Free Tier</span>
+                      <span className="text-muted-foreground">Free Tier</span>
                     )}
                   </td>
-                  <td className="p-4 font-mono text-xs text-neutral-400">
+                  <td className="p-4 font-mono text-xs text-muted-foreground">
                     {u.stripeId}
                   </td>
-                  <td className="p-4 text-neutral-400">{u.lastLogin}</td>
-                  <td className="p-4 text-right">
+                  <td className="p-4 text-muted-foreground">{u.lastLogin}</td>
+                  <td className="p-4 text-right flex justify-end gap-4">
                     <SendAlertButton username={u.username} />
+                    <SendEmailButton username={u.username} />
                   </td>
                 </tr>
               ))}

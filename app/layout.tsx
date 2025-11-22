@@ -3,8 +3,9 @@ import type { Metadata } from "next";
 import { PosthogBoot } from "./PosthogBoot";
 import { cookies } from "next/headers";
 import jwt from "jsonwebtoken";
-// This component will handle the live Firestore connection
 import NotificationManager from "@/components/NotificationManager";
+import { ThemeProvider } from "./ThemeProvider";
+import { CookieConsent } from "@/components/CookieConsent"; // <--- NEW IMPORT
 
 export const metadata: Metadata = {
   title: "Chess Quant",
@@ -16,8 +17,6 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  // 1. Attempt to get the logged-in username server-side
-  // We need this to tell the NotificationManager which user's alerts to listen for.
   const cookieStore = await cookies();
   const token = cookieStore.get("session")?.value;
   let username = "";
@@ -27,19 +26,31 @@ export default async function RootLayout({
       const payload = jwt.verify(token, process.env.SESSION_SECRET) as any;
       username = payload.lichessUsername || "";
     } catch (e) {
-      // If token is invalid/expired, we just don't listen for notifications
+      // Token invalid/expired
     }
   }
 
   return (
-    <html lang="en">
-      <body className="bg-black text-white">
-        <PosthogBoot />
-        
-        {/* Invisible listener for live toasts */}
-        <NotificationManager username={username} />
-        
-        {children}
+    // suppressHydrationWarning is required by next-themes
+    <html lang="en" suppressHydrationWarning>
+      <body className="antialiased">
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange
+        >
+          {/* Analytics Bootstrapper (Silent Init) */}
+          <PosthogBoot />
+          
+          {/* Live Notifications System */}
+          <NotificationManager username={username} />
+          
+          {/* GDPR Banner (Shows if no consent found) */}
+          <CookieConsent />
+          
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -5,7 +5,7 @@ import { posthog } from "@/lib/posthogClient";
 import { ProBadge } from "@/components/ProBadge";
 import { ProGate } from "@/components/ProGate";
 import { FeatureCard } from "@/components/FeatureCard";
-
+import { ThemeToggle } from "@/components/ThemeToggle";
 type User = {
   lichessId: string;
   lichessUsername: string;
@@ -299,7 +299,7 @@ export default function HomePage() {
 
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center gap-6 bg-black text-white px-4">
+    <main className="min-h-screen flex flex-col items-center justify-center gap-6 bg-background text-foreground px-4">
       {/* Title */}
       <h1 className="text-3xl font-bold flex items-center gap-2">
         Chess Quant
@@ -319,9 +319,13 @@ export default function HomePage() {
             <p className="text-sm text-green-400">
               Logged in as <strong>{user.lichessUsername}</strong>
             </p>
+            
+            {/* NEW: Theme Toggle */}
+            <ThemeToggle /> 
+            
             <button
               onClick={logout}
-              className="px-3 py-1 rounded bg-neutral-800 text-xs border border-neutral-600 hover:bg-neutral-700"
+              className="px-3 py-1 mt-2 rounded bg-neutral-800 text-xs border border-neutral-600 hover:bg-neutral-700"
             >
               Log out
             </button>
@@ -404,7 +408,7 @@ export default function HomePage() {
 
       {/* Tilt history */}
       {user && (
-        <section className="mt-6 w-full max-w-md border border-neutral-800 rounded-lg p-4 bg-neutral-900/40">
+        <section className="mt-6 w-full max-w-md border border-border rounded-lg p-4 bg-card text-card-foreground">
           <h2 className="font-semibold mb-2 text-lg">Recent tilt checks</h2>
 
           {loadingDashboard && (
