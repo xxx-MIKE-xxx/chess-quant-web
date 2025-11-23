@@ -20,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const session = jwt.verify(token, sessionSecret) as SessionPayload;
     const { lichessUsername } = session;
 
-    console.log(`[/api/tilt] Reading recent games from Firestore for ${lichessUsername}...`);
+    console.log(`[/api/py_tilt] Reading recent games from Firestore for ${lichessUsername}...`);
 
     // 1. NEW: Fetch Context Window from Firestore (Local Cache) instead of Lichess
     // We only need the last 20-50 games for prediction
@@ -41,15 +41,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const personalModel = userDoc.data()?.personalModel || null;
 
     if (personalModel) {
-      console.log("[/api/tilt] Using Personal Neural Model 🧠");
+      console.log("[/api/py_tilt] Using Personal Neural Model 🧠");
     } else {
-      console.log("[/api/tilt] Using Global Model 🌐");
+      console.log("[/api/py_tilt] Using Global Model 🌐");
     }
 
     // 3. Call Python Microservice
     // NOTE: In local dev, this requires 'vercel dev'. 'npm run dev' cannot route to python.
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-    const pythonUrl = `${appUrl}/api/tilt`; 
+    const pythonUrl = `${appUrl}/api/py_tilt`; 
 
     const pythonRes = await fetch(pythonUrl, {
       method: "POST",
@@ -69,7 +69,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const prediction = await pythonRes.json();
     const score = prediction.stop_probability || 0;
 
-    console.log(`[/api/tilt] Prediction: ${score}`);
+    console.log(`[/api/py_tilt] Prediction: ${score}`);
 
     // 4. Save Result
     await db.collection("users").doc(lichessUsername).collection("tiltResults").add({
@@ -91,7 +91,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
   } catch (e: any) {
-    console.error("[/api/tilt] Failed:", e);
+    console.error("[/api/py_tilt] Failed:", e);
     return res.status(500).json({ error: e.message });
   }
 }
