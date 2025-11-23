@@ -1,5 +1,11 @@
 from http.server import BaseHTTPRequestHandler
 import json
+import sys
+import os
+
+# Add the current directory to Python's path so it finds the SDK
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+
 from tilt_model_sdk import TiltModel
 
 class handler(BaseHTTPRequestHandler):
