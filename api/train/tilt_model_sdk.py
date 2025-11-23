@@ -194,20 +194,53 @@ class TiltModel:
     def predict_latest(self, recent_games_list):
         """
         Predicts tilt probability for the MOST RECENT game in the list.
-        Input: List of raw game dicts (context window).
         """
         if self.model is None:
-            raise ValueError("Model not trained/loaded.")
+            # Return a safe default if model is broken/missing
+            return {
+                "stop_probability": 0.0,
+                "should_stop": False,
+                "reason": "Model not active",
+                "metrics": {}
+            }
             
+        if not recent_games_list:
+             return {
+                "stop_probability": 0.0,
+                "should_stop": False,
+                "reason": "No recent games to analyze",
+                "metrics": {}
+            }
+
         # 1. Process
         processed_games = [FeatureExtractor.process_single_game(g, self.user_id) for g in recent_games_list]
         df_enriched = FeatureExtractor.enrich_session(processed_games)
         
+        # CRITICAL FIX: Ensure all expected feature columns exist, fill with 0 if missing
+        for col in self.feature_cols:
+            if col not in df_enriched.columns:
+                df_enriched[col] = 0.0
+        
         # 2. Select Last Game
+        if df_enriched.empty:
+             return {
+                "stop_probability": 0.0,
+                "reason": "Data processing error",
+                "metrics": {}
+            }
+
         last_row = df_enriched.iloc[[-1]][self.feature_cols]
         
         # 3. Predict
-        prob = self.model.predict_proba(last_row)[0, 1]
+        try:
+            prob = self.model.predict_proba(last_row)[0, 1]
+        except Exception as e:
+            print(f"Prediction math failed: {e}")
+            return {
+                "stop_probability": 0.0,
+                "reason": "Calculation error",
+                "metrics": {}
+            }
         
         # 4. Explain (Optional)
         speed_factor = last_row['speed_vs_start'].values[0]
