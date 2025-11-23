@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { posthog } from "@/lib/posthogClient";
 import { ProBadge } from "@/components/ProBadge";
 import { ProGate } from "@/components/ProGate";
 import { FeatureCard } from "@/components/FeatureCard";
 import { ThemeToggle } from "@/components/ThemeToggle";
+// import { TiltChart } from "@/components/TiltChart"; 
+
 type User = {
   lichessId: string;
   lichessUsername: string;
@@ -29,40 +31,47 @@ type DashboardProfile = {
 type DashboardData = {
   profile: DashboardProfile;
   tiltHistory: TiltHistoryItem[];
+  lastGameAt?: string | null;
 };
 
 export default function HomePage() {
   const [user, setUser] = useState<User>(null);
   const [tiltScore, setTiltScore] = useState<number | null>(null);
   const [tiltHistory, setTiltHistory] = useState<TiltHistoryItem[]>([]);
+  const [lastGameDate, setLastGameDate] = useState<string | null>(null);
+  
   const [loadingTilt, setLoadingTilt] = useState(false);
   const [loadingDashboard, setLoadingDashboard] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  
   const [error, setError] = useState<string | null>(null);
   const [isPro, setIsPro] = useState(false);
-  const [billingLoading, setBillingLoading] = useState(false); 
   const [cancelAtPeriodEnd, setCancelAtPeriodEnd] = useState(false);
 
+  // DEV CONTROL: Polling State
+  const [isPollingEnabled, setIsPollingEnabled] = useState(true);
+  const isMounted = useRef(false);
 
-  // Stripe enabled in this build?
   const stripeReady = !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 
-  // Load session + dashboard on mount
+  // --- INITIAL LOAD ---
   useEffect(() => {
-    async function loadUserAndDashboard() {
+    isMounted.current = true;
+
+    async function loadUser() {
       try {
         const res = await fetch("/api/me");
         if (!res.ok) {
           setUser(null);
           return;
         }
-
         const data = await res.json();
         const u: User = data.user ?? null;
-        setUser(u);
+        
+        if (isMounted.current) setUser(u);
 
         if (u) {
-          // Identify user in PostHog
           posthog.identify(u.lichessId || u.lichessUsername, {
             lichessId: u.lichessId,
             lichessUsername: u.lichessUsername,
@@ -73,36 +82,73 @@ export default function HomePage() {
         console.error("Error loading user:", e);
       }
     }
+    loadUser();
 
-    loadUserAndDashboard();
+    return () => { isMounted.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+  // --- SMART POLLING LOGIC ---
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+
+    const runSyncLoop = async () => {
+      if (!user || !isPollingEnabled || !isMounted.current) return;
+
+      try {
+        setIsSyncing(true);
+        // console.log("[Auto-Sync] Checking for new games...");
+
+        const res = await fetch("/api/sync/games", { method: "POST" });
+        
+        if (res.ok) {
+          const json = await res.json();
+          // Only reload dashboard if we actually found new games (count > 0)
+          if (json.count > 0) {
+            console.log(`[Auto-Sync] Found ${json.count} new games! Updating UI...`);
+            await loadDashboard();
+          }
+        }
+      } catch (e) {
+        console.error("[Auto-Sync] Failed", e);
+      } finally {
+        if (isMounted.current) setIsSyncing(false);
+        
+        if (isPollingEnabled && isMounted.current) {
+          // Poll every 30 seconds
+          timeoutId = setTimeout(runSyncLoop, 30000); 
+        }
+      }
+    };
+
+    // Trigger immediately on login
+    if (user && isPollingEnabled) {
+      runSyncLoop();
+    }
+
+    return () => clearTimeout(timeoutId);
+  }, [user, isPollingEnabled]); 
+
+
+  // --- API ACTIONS ---
+
   async function loadDashboard() {
-    setLoadingDashboard(true);
     try {
       const res = await fetch("/api/dashboard");
-      if (!res.ok) {
-        console.error("Dashboard error:", res.status);
-        return;
-      }
+      if (!res.ok) return;
 
       const data: DashboardData = await res.json();
-      setTiltScore(
-        typeof data.profile.lastTiltScore === "number"
-          ? data.profile.lastTiltScore
-          : null
-      );
-      setTiltHistory(data.tiltHistory || []);
-      setIsPro(!!data.profile.isPro);
       
-      // NEW: Set the cancellation state from the backend
-      setCancelAtPeriodEnd(!!data.profile.cancelAtPeriodEnd);
-      
+      if (isMounted.current) {
+        setTiltScore(typeof data.profile.lastTiltScore === "number" ? data.profile.lastTiltScore : null);
+        setTiltHistory(data.tiltHistory || []);
+        setIsPro(!!data.profile.isPro);
+        setCancelAtPeriodEnd(!!data.profile.cancelAtPeriodEnd);
+        setLastGameDate(data.lastGameAt || null);
+      }
     } catch (e) {
       console.error("Error loading dashboard:", e);
-    } finally {
-      setLoadingDashboard(false);
     }
   }
 
@@ -113,9 +159,7 @@ export default function HomePage() {
   async function logout() {
     try {
       await fetch("/api/auth/lichess/logout", { method: "POST" });
-    } catch (e) {
-      console.error("Logout failed:", e);
-    }
+    } catch (e) { console.error(e); }
     posthog.reset();
     setUser(null);
     setTiltScore(null);
@@ -124,322 +168,228 @@ export default function HomePage() {
     setError(null);
   }
 
-
-
-  // app/page.tsx
-
   async function manageBilling() {
-    if (!user) return;
-    if (!stripeReady) return;
-
+    if (!user || !stripeReady) return;
     try {
       setCheckoutLoading(true);
-
       const res = await fetch("/api/billing/portal", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-
       if (!res.ok) {
         const text = await res.text();
-        console.error("Billing portal error", res.status, text);
         setError(text || "Failed to open billing portal");
         return;
       }
-
       const data = await res.json();
-      if (data.url) {
-        // FIX: Use current window so the "Return" button brings them back here
-        // and refreshes the page state.
-        window.location.href = data.url;
-      } else {
-        setError("No billing portal URL returned from server");
-      }
+      if (data.url) window.location.href = data.url;
+      else setError("No billing portal URL returned");
     } catch (e) {
-      console.error("manageBilling failed:", e);
+      console.error(e);
       setError("Failed to open billing portal");
     } finally {
-      // If we redirect, this state change technically doesn't matter, 
-      // but it's good practice in case redirect fails.
       setCheckoutLoading(false);
     }
   }
 
-
-
   async function startCheckout() {
-    if (!user) return;
-
-    if (!stripeReady) {
-      console.warn("Stripe not configured in this build");
-      return;
-    }
-
+    if (!user || !stripeReady) return;
     try {
       setCheckoutLoading(true);
-
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-
       if (!res.ok) {
-        const text = await res.text();
-        console.error("Checkout error", res.status, text);
-        setError("Unable to start checkout. Please try again in a moment.");
+        setError("Unable to start checkout.");
         return;
       }
-
-
       const data = await res.json();
       if (data.url) {
-        posthog.capture("upgrade_clicked", {
-          lichessUsername: user.lichessUsername,
-        });
+        posthog.capture("upgrade_clicked", { username: user.lichessUsername });
         window.location.href = data.url;
       } else {
-        setError("No checkout URL returned from server");
+        setError("No checkout URL returned");
       }
     } catch (e) {
-      console.error("startCheckout failed:", e);
+      console.error(e);
       setError("Failed to start Stripe checkout");
     } finally {
       setCheckoutLoading(false);
     }
   }
 
-
-  async function openBillingPortal() {
-    if (!user) return;
-
-    try {
-      setBillingLoading(true);
-      setError(null);
-
-      const res = await fetch("/api/billing/portal", {
-        method: "POST",
-      });
-
-      if (!res.ok) {
-        console.error("Billing portal error", res.status);
-        const text = await res.text();
-        setError(text || "Unable to open billing portal");
-        return;
-      }
-
-      const data = await res.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        setError("No billing portal URL returned from server");
-      }
-    } catch (e) {
-      console.error("openBillingPortal failed:", e);
-      setError("Failed to open billing portal");
-    } finally {
-      setBillingLoading(false);
-    }
-  }
-
-
   async function runTiltAnalysis() {
     if (!user) return;
-
     setLoadingTilt(true);
     setError(null);
-
-    posthog.capture("tilt_check_started", {
-      lichessUsername: user.lichessUsername,
-      source: "lichess",
-    });
+    posthog.capture("tilt_check_started", { username: user.lichessUsername });
 
     try {
       const res = await fetch("/api/tilt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}), // backend uses session
+        body: JSON.stringify({}),
       });
 
-      if (!res.ok) {
-        const text = await res.text();
-
-        posthog.capture("tilt_check_failed", {
-          lichessUsername: user.lichessUsername,
-          status: res.status,
-          errorText: text.slice(0, 500),
-        });
-
-        const genericMessage =
-          res.status === 500 || res.status === 503
-            ? "Tilt analysis is temporarily unavailable. Please try again in a minute."
-            : "Something went wrong while checking your tilt. Please try again.";
-
-        throw new Error(genericMessage);
-      }
+      if (!res.ok) throw new Error("Tilt analysis unavailable.");
 
       const data = await res.json();
       setTiltScore(data.tilt_score);
-
-      posthog.capture("tilt_check_completed", {
-        lichessUsername: user.lichessUsername,
-        tiltScore: data.tilt_score,
-        source: "lichess",
+      posthog.capture("tilt_check_completed", { 
+        username: user.lichessUsername, 
+        tiltScore: data.tilt_score 
       });
-
       await loadDashboard();
     } catch (err: any) {
-      setError(
-        err?.message ??
-          "Something went wrong while checking your tilt. Please try again."
-      );
+      setError(err?.message ?? "Something went wrong.");
     } finally {
       setLoadingTilt(false);
     }
   }
 
-
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center gap-6 bg-background text-foreground px-4">
-      {/* Title */}
-      <h1 className="text-3xl font-bold flex items-center gap-2">
-        Chess Quant
-        {/* LOGIC: Show Badge if active, 'Ends Soon' if canceling */}
-        {isPro && !cancelAtPeriodEnd && <ProBadge />}
-        {isPro && cancelAtPeriodEnd && (
-          <span className="bg-yellow-600/80 border border-yellow-500 text-white text-xs px-2 py-0.5 rounded ml-2 select-none">
-            Ends Soon
-          </span>
-        )}
-      </h1>
+    <main className="min-h-screen flex flex-col items-center justify-center gap-8 bg-background text-foreground px-4 py-12 relative overflow-hidden">
+      
+      <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none"></div>
 
-      {/* Auth status */}
-      <div className="flex flex-col items-center gap-2">
-        {user ? (
-          <>
-            <p className="text-sm text-green-400">
-              Logged in as <strong>{user.lichessUsername}</strong>
-            </p>
-            
-            {/* NEW: Theme Toggle */}
-            <ThemeToggle /> 
-            
+      {/* Header Section */}
+      <div className="relative z-10 flex flex-col items-center gap-4">
+        <h1 className="text-4xl font-bold tracking-tight flex items-center gap-3">
+          CHESS<span className="text-primary">QUANT</span>
+          {isPro && !cancelAtPeriodEnd && <ProBadge />}
+          {isPro && cancelAtPeriodEnd && (
+            <span className="rounded border border-yellow-500/30 bg-yellow-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-yellow-500">
+              Expiring
+            </span>
+          )}
+        </h1>
+
+        <div className="flex items-center gap-4">
+          {user ? (
+            <div className="flex items-center gap-3 bg-card/50 border border-border rounded-full px-4 py-1.5 backdrop-blur-sm shadow-sm">
+              <div className={`w-2 h-2 rounded-full ${isSyncing ? "bg-blue-500 animate-ping" : "bg-primary"}`} />
+              <p className="text-xs font-mono text-muted-foreground">
+                OPERATOR: <strong className="text-foreground">{user.lichessUsername}</strong>
+              </p>
+              
+              <div className="h-4 w-px bg-border mx-1" />
+              <ThemeToggle />
+              <div className="h-4 w-px bg-border mx-1" />
+              
+              {/* DEV CONTROL: Toggle Polling */}
+              <button
+                onClick={() => setIsPollingEnabled(!isPollingEnabled)}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded border transition-colors ${
+                  isPollingEnabled 
+                    ? "border-primary/30 text-primary bg-primary/10" 
+                    : "border-destructive/30 text-destructive bg-destructive/10"
+                }`}
+              >
+                {isPollingEnabled ? "SYNC: ON" : "SYNC: OFF"}
+              </button>
+
+              <div className="h-4 w-px bg-border mx-1" />
+              
+              <button
+                onClick={logout}
+                className="text-xs font-bold text-muted-foreground hover:text-destructive transition-colors"
+              >
+                LOGOUT
+              </button>
+            </div>
+          ) : (
             <button
-              onClick={logout}
-              className="px-3 py-1 mt-2 rounded bg-neutral-800 text-xs border border-neutral-600 hover:bg-neutral-700"
+              onClick={loginWithLichess}
+              className="px-6 py-2 rounded-lg bg-primary text-primary-foreground font-bold text-sm hover:bg-primary/90 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all"
             >
-              Log out
+              INITIALIZE SESSION
             </button>
-          </>
-        ) : (
-          <button
-            onClick={loginWithLichess}
-            className="px-4 py-2 rounded bg-green-600 text-white hover:bg-green-500"
-          >
-            Login with Lichess
-          </button>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Feature cards */}
-      <div className="mt-4 w-full max-w-2xl grid gap-4 md:grid-cols-2">
+      {/* Feature Cards */}
+      <div className="relative z-10 mt-4 w-full max-w-4xl grid gap-6 md:grid-cols-2">
         <FeatureCard
-          title="Tilt check"
+          title="Tilt Scanner"
           description="Analyze your recent games and measure your emotional tilt."
-          cta={
-            !user
-              ? "Login to run tilt"
-              : loadingTilt
-              ? "Calculating..."
-              : "Check my tilt"
-          }
+          cta={!user ? "Login Required" : loadingTilt ? "Analyzing..." : "Run Scan"}
           onClick={runTiltAnalysis}
           disabled={loadingTilt || !user}
           pro={false}
         />
 
-        {/* Pro-only feature slot */}
         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
           <FeatureCard
-            title="Deep Pro analytics"
-            description="(Coming soon) Advanced performance breakdowns and training plans tailored to your tilt patterns."
-            cta={
-              !stripeReady
-                ? "Pro coming soon"
-                : !user
-                ? "Log in to upgrade"
-                : checkoutLoading
-                ? isPro
-                  ? "Opening billing…"
-                  : "Opening Stripe…"
-                : isPro
-                ? "Manage subscription"
-                : "Upgrade to Pro"
-            }
-            onClick={
-              !stripeReady || !user
-                ? undefined
-                : isPro
-                ? manageBilling
-                : startCheckout
-            }
-            disabled={!user || checkoutLoading || !stripeReady}
+            title="Deep Market Analytics"
+            description="Advanced performance breakdowns and training plans tailored to your tilt patterns."
+            cta={!stripeReady ? "System Offline" : checkoutLoading ? "Processing..." : "Manage Access"}
+            onClick={manageBilling}
+            disabled={!stripeReady}
             pro
           />
         </ProGate>
       </div>
 
-      {/* Stripe disabled message */}
       {!stripeReady && (
-        <p className="text-[11px] text-neutral-400 max-w-xs text-center">
-          Payments are disabled in this build. You can still use tilt analysis
-          freely.
-        </p>
+        <div className="text-[10px] font-mono text-muted-foreground opacity-60">
+          * Payment Gateway: OFFLINE (Dev Build)
+        </div>
       )}
-
-      {/* Status / errors */}
-      {error && <p className="text-red-500 text-sm mt-2">Error: {error}</p>}
+      {error && <p className="text-destructive text-sm font-mono bg-destructive/10 px-3 py-1 rounded border border-destructive/20">Error: {error}</p>}
 
       {tiltScore !== null && !error && (
-        <p className="mt-2 text-lg">
-          Your tilt score:{" "}
-          <span className="font-mono">{tiltScore.toFixed(2)}</span>
-        </p>
+        <div className="relative z-10 flex flex-col items-center animate-in fade-in zoom-in duration-500">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2">
+            Current Tilt Index
+          </div>
+          <div className="text-6xl font-mono font-bold text-foreground tracking-tighter">
+            {tiltScore.toFixed(2)}
+          </div>
+        </div>
       )}
 
-      {/* Tilt history */}
       {user && (
-        <section className="mt-6 w-full max-w-md border border-border rounded-lg p-4 bg-card text-card-foreground">
-          <h2 className="font-semibold mb-2 text-lg">Recent tilt checks</h2>
-
-          {loadingDashboard && (
-            <p className="text-sm text-neutral-400">Loading history…</p>
-          )}
+        <section className="relative z-10 mt-6 w-full max-w-md border border-border rounded-xl bg-card/50 backdrop-blur-md shadow-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-border bg-secondary/30 flex flex-col gap-1">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                <span className={`w-1.5 h-1.5 rounded-full ${isSyncing ? "bg-blue-500 animate-pulse" : "bg-primary"}`} />
+                Recent Scans
+              </h2>
+              <span className="text-[10px] font-mono text-primary font-bold bg-primary/10 px-2 py-0.5 rounded">
+                LIVE DATA
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-[10px] font-mono text-muted-foreground">
+              <span>Last Game Synced:</span>
+              <span className="text-foreground font-semibold">
+                {lastGameDate ? new Date(lastGameDate).toLocaleString() : "WAITING..."}
+              </span>
+            </div>
+          </div>
 
           {!loadingDashboard && tiltHistory.length === 0 && (
-            <p className="text-sm text-neutral-400">
-              No tilt checks yet. Press &quot;Check my tilt&quot; to create your
-              first one.
-            </p>
+            <div className="p-8 text-center">
+              <p className="text-sm text-muted-foreground">No data available.</p>
+              <p className="text-xs text-muted-foreground/60 mt-1">Run your first scan to populate the grid.</p>
+            </div>
           )}
 
           {!loadingDashboard && tiltHistory.length > 0 && (
-            <ul className="space-y-1 text-sm">
+            <div className="divide-y divide-border max-h-60 overflow-y-auto">
               {tiltHistory.map((item) => (
-                <li
-                  key={item.id}
-                  className="flex justify-between border-b border-neutral-800/70 py-1 last:border-b-0"
-                >
-                  <span>
-                    {item.createdAt
-                      ? new Date(item.createdAt).toLocaleString()
-                      : "Unknown time"}
+                <div key={item.id} className="flex justify-between items-center px-4 py-3 hover:bg-secondary/50 transition-colors group">
+                  <span className="text-xs font-mono text-muted-foreground group-hover:text-foreground transition-colors">
+                    {item.createdAt ? new Date(item.createdAt).toLocaleString() : "Unknown"}
                   </span>
-                  <span className="font-mono">
+                  <span className="font-mono text-sm font-bold text-foreground">
                     {item.tiltScore !== null ? item.tiltScore.toFixed(2) : "-"}
                   </span>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </section>
       )}

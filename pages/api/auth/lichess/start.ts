@@ -57,7 +57,14 @@ export default async function handler(
     response_type: "code",
     client_id: clientId,
     redirect_uri: redirectUri,
-    // NOTE: we intentionally omit `scope` to avoid invalid_scope errors in prod.
+    // EXPANDED SCOPES for "Full Access" features:
+    // email:read - User profile data
+    // preference:read - Chess settings
+    // challenge:read/write - For "Next Game" features
+    // board:play - For the "Session Agent" to make moves
+    // study:read/write - For saving training/endgames
+    // puzzle:read - For "Warm-up" stats
+    scope: "email:read preference:read challenge:read challenge:write board:play study:read study:write puzzle:read team:read follow:read",
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",

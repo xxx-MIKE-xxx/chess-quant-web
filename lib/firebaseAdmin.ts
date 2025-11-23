@@ -61,7 +61,7 @@ export async function getUserDashboard(username: string) {
 
   const userData = userSnap.data() || {};
 
-  // ... (keep your existing tiltHistory logic) ...
+  // 1. EXISTING: Fetch Tilt History
   const resultsSnap = await userRef
     .collection("tiltResults")
     .orderBy("createdAt", "desc")
@@ -79,6 +79,21 @@ export async function getUserDashboard(username: string) {
     };
   });
 
+  // 2. NEW: Fetch Last Synced Game Date
+  const lastGameSnap = await userRef
+    .collection("games")
+    .orderBy("createdAt", "desc") // Sort by game played time
+    .limit(1)
+    .get();
+
+  // Lichess time is usually milliseconds (number), convert to string if needed
+  let lastGameAt = null;
+  if (!lastGameSnap.empty) {
+    const gameData = lastGameSnap.docs[0].data();
+    // Lichess 'createdAt' is a timestamp number (ms)
+    lastGameAt = new Date(gameData.createdAt).toISOString();
+  }
+
   return {
     profile: {
       lichessId: userData.lichessId ?? null,
@@ -88,11 +103,10 @@ export async function getUserDashboard(username: string) {
         ? userData.lastTiltAt.toDate().toISOString()
         : null,
       isPro: typeof userData.isPro === "boolean" ? userData.isPro : null,
-      
-      // --- NEW: Send the flag to the frontend ---
-      cancelAtPeriodEnd: !!userData.cancelAtPeriodEnd, 
+      cancelAtPeriodEnd: !!userData.cancelAtPeriodEnd,
     },
     tiltHistory,
+    lastGameAt, // <--- Pass this to frontend
   };
 }
 
