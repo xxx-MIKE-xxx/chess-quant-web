@@ -35,6 +35,7 @@ type DashboardData = {
 };
 
 export default function HomePage() {
+  // --- STATE ---
   const [user, setUser] = useState<User>(null);
   const [tiltScore, setTiltScore] = useState<number | null>(null);
   const [tiltHistory, setTiltHistory] = useState<TiltHistoryItem[]>([]);

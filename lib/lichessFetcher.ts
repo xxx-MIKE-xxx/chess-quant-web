@@ -71,6 +71,7 @@ export async function syncLichessGames(
         winner: game.winner || "draw",
         moves: game.moves,
         opening: game.opening,
+        status: 'raw',
         syncedAt: new Date().toISOString()
       }, { merge: true });
 
