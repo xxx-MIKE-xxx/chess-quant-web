@@ -89,14 +89,16 @@ class handler(BaseHTTPRequestHandler):
 
             if not games:
                 self._set_headers(200)
-                self.wfile.write(json.dumps({"stop_probability": 0.0}).encode('utf-8'))
+                self.wfile.write(json.dumps({"stop_probability": 0.0, "tilt_score": 0.0}).encode('utf-8'))
                 return
 
             score = preprocess_and_predict(games)
             
             self._set_headers(200)
+            # FIX: Add "tilt_score" to match what page.tsx expects
             self.wfile.write(json.dumps({
-                "stop_probability": score, 
+                "tilt_score": score,        # <--- The frontend needs this!
+                "stop_probability": score,  # Keep this for clarity
                 "should_stop": score > 0.5
             }).encode('utf-8'))
             
