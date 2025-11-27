@@ -7,7 +7,7 @@ import { ProGate } from "@/components/ProGate";
 import { FeatureCard } from "@/components/FeatureCard";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAnalysisQueue } from "@/lib/hooks/useAnalysisQueue";
-import { filterCurrentSession } from "@/lib/chess/gameProcessor";
+// import { TiltChart } from "@/components/TiltChart"; 
 import type { ProcessedGame } from "@/lib/chess/gameProcessor";
 
 type User = {
@@ -20,6 +20,7 @@ export default function HomePage() {
   const [user, setUser] = useState<User>(null);
   const [tiltScore, setTiltScore] = useState<number | null>(null);
   
+  // The "Raw" games from Lichess (Ephemeral - not stored)
   const [rawGames, setRawGames] = useState<any[]>([]);
   
   const [loadingTilt, setLoadingTilt] = useState(false);
@@ -29,6 +30,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
 
   // --- HOOKS ---
+  // The worker engine that processes raw games
   const { analyzedGames, isAnalyzing, analyzeGame } = useAnalysisQueue();
   
   const stripeReady = !!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
@@ -41,6 +43,7 @@ export default function HomePage() {
         if (res.ok) {
           const data = await res.json();
           setUser(data.user);
+          // Check pro status
           if (data.user) {
              checkProStatus(data.user.lichessUsername);
              posthog.identify(data.user.lichessUsername);
@@ -70,15 +73,8 @@ export default function HomePage() {
         const res = await fetch('/api/proxy/recent-games');
         if (res.ok) {
             const data = await res.json();
-            if (data.games && data.games.length > 0) {
-                // OPTIMIZATION: Filter for Current Session ONLY
-                // This prevents analyzing games from yesterday that don't impact current tilt.
-                const sessionGames = filterCurrentSession(data.games);
-                
-                console.log(`[Session] Found ${data.games.length} recent games.`);
-                console.log(`[Session] Filtered to ${sessionGames.length} games in active session.`);
-                
-                setRawGames(sessionGames);
+            if (data.games) {
+                setRawGames(data.games);
             }
         }
       } catch(e) { console.error("Lichess fetch failed", e); }
@@ -102,30 +98,49 @@ export default function HomePage() {
     if (nextGame) {
       analyzeGame(nextGame, user.lichessUsername);
     } else if (analyzedGames.length > 0 && rawGames.length > 0) {
-        // Simple debounce/check
+        // If we have processed everything available, check for tilt
         if (analyzedGames.length >= rawGames.length) {
-             calculateTiltScore(analyzedGames);
+             // Auto-calculate if we haven't yet or if new data came in
+             // For manual trigger, we rely on the button.
+             // To make it auto-update, uncomment this:
+             // calculateTiltScore(analyzedGames);
         }
     }
   }, [rawGames, analyzedGames, isAnalyzing, user]);
 
-  async function calculateTiltScore(games: ProcessedGame[]) {
+  async function runTiltAnalysis() {
      if (loadingTilt) return;
      
+     // Clear previous errors
+     setError(null);
+     setLoadingTilt(true);
+     
      try {
+        // Send purely the analyzed stats to Python
         const res = await fetch('/api/py_tilt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                games: games, 
+                games: analyzedGames, 
                 personal_model: null 
             })
         });
+
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || "Tilt analysis unavailable.");
+        }
+
         const data = await res.json();
         if (data.tilt_score !== undefined) {
             setTiltScore(data.tilt_score);
         }
-     } catch (e) { console.error("Inference failed", e); }
+     } catch (e: any) { 
+        console.error("Inference failed", e); 
+        setError(e.message || "Tilt Check Failed");
+     } finally {
+        setLoadingTilt(false);
+     }
   }
 
   // --- ACTIONS ---
@@ -196,8 +211,37 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* Feature Cards */}
+      <div className="relative z-10 mt-4 w-full max-w-4xl grid gap-6 md:grid-cols-2">
+        <FeatureCard
+          title="Tilt Scanner"
+          description="Analyze your recent games and measure your emotional tilt."
+          cta={!user ? "Login Required" : loadingTilt ? "Analyzing..." : "Run Scan"}
+          onClick={runTiltAnalysis}
+          disabled={loadingTilt || !user}
+          pro={false}
+        />
+
+        <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
+          <FeatureCard
+            title="Deep Pro Analytics"
+            description="Unlock advanced training plans." 
+            cta={isPro ? "Manage Subscription" : "Upgrade"}
+            onClick={isPro ? manageBilling : startCheckout}
+            pro 
+          />
+        </ProGate>
+      </div>
+
+      {/* Error Message */}
+      {error && (
+        <div className="relative z-10 mt-4 p-3 rounded border border-destructive/50 bg-destructive/10 text-destructive text-sm font-mono">
+          Error: {error}
+        </div>
+      )}
+
       {/* Tilt Score Display */}
-      {tiltScore !== null && (
+      {tiltScore !== null && !error && (
         <div className="relative z-10 flex flex-col items-center animate-in fade-in zoom-in duration-500">
           <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-2">
             Current Tilt Index
@@ -215,10 +259,18 @@ export default function HomePage() {
             <div className="flex justify-between items-center">
               <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
                 <span className={`w-1.5 h-1.5 rounded-full ${isAnalyzing ? "bg-blue-500 animate-pulse" : "bg-primary"}`} />
-                Session Analysis
+                Recent Scans
               </h2>
               <span className="text-[10px] font-mono text-primary font-bold bg-primary/10 px-2 py-0.5 rounded">
-                {analyzedGames.length} / {rawGames.length} GAMES
+                LIVE DATA
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-[10px] font-mono text-muted-foreground">
+              <span>Last Game Synced:</span>
+              <span className="text-foreground font-semibold">
+                {analyzedGames.length > 0 
+                  ? new Date(analyzedGames[analyzedGames.length - 1].createdAt).toLocaleString()
+                  : "WAITING..."}
               </span>
             </div>
           </div>
@@ -235,8 +287,6 @@ export default function HomePage() {
                 <div key={game.id} className="flex justify-between items-center px-4 py-2 hover:bg-secondary/50 transition-colors">
                    <div className="flex flex-col">
                        <span className="text-xs font-mono text-foreground">{new Date(game.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                       
-                       {/* FIX 2: Use my_acpl and my_blunder_count */}
                        <span className="text-[10px] text-muted-foreground">ACPL: {game.my_acpl} | Blunders: {game.my_blunder_count}</span>
                    </div>
                    <span className={`text-xs font-bold ${game.result === 1 ? 'text-green-500' : game.result === 0 ? 'text-red-500' : 'text-gray-500'}`}>
@@ -247,20 +297,6 @@ export default function HomePage() {
           </div>
         </section>
       )}
-
-      {/* Feature Cards (Pro Gate) */}
-      <div className="relative z-10 mt-4 w-full max-w-4xl grid gap-6 md:grid-cols-2">
-         <ProGate isPro={isPro} onUpgradeClick={startCheckout}>
-            <FeatureCard 
-               title="Deep Pro Analytics" 
-               description="Unlock advanced training plans." 
-               cta={isPro ? "Manage Subscription" : "Upgrade"}
-               onClick={isPro ? manageBilling : startCheckout}
-               pro 
-            />
-         </ProGate>
-      </div>
-
     </main>
   );
 }
