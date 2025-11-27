@@ -7,7 +7,7 @@ import { ProGate } from "@/components/ProGate";
 import { FeatureCard } from "@/components/FeatureCard";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAnalysisQueue } from "@/lib/hooks/useAnalysisQueue";
-// FIX 1: Import the correct type from the processor file, not the hook
+import { filterCurrentSession } from "@/lib/chess/gameProcessor";
 import type { ProcessedGame } from "@/lib/chess/gameProcessor";
 
 type User = {
@@ -66,18 +66,26 @@ export default function HomePage() {
 
     const fetchRecentGames = async () => {
       try {
+        // This hits your new proxy. No DB write.
         const res = await fetch('/api/proxy/recent-games');
         if (res.ok) {
             const data = await res.json();
-            if (data.games) {
-                setRawGames(data.games);
+            if (data.games && data.games.length > 0) {
+                // OPTIMIZATION: Filter for Current Session ONLY
+                // This prevents analyzing games from yesterday that don't impact current tilt.
+                const sessionGames = filterCurrentSession(data.games);
+                
+                console.log(`[Session] Found ${data.games.length} recent games.`);
+                console.log(`[Session] Filtered to ${sessionGames.length} games in active session.`);
+                
+                setRawGames(sessionGames);
             }
         }
       } catch(e) { console.error("Lichess fetch failed", e); }
     };
     
-    fetchRecentGames();
-    const interval = setInterval(fetchRecentGames, 60000);
+    fetchRecentGames(); // Run once immediately
+    const interval = setInterval(fetchRecentGames, 60000); // Then every 60s
     return () => clearInterval(interval);
   }, [user]);
 

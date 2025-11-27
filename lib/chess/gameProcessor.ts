@@ -76,4 +76,44 @@ export function extractBasicStats(game: any, username: string) {
     white_user: game.players.white.user?.name || "Anon",
     black_user: game.players.black.user?.name || "Anon"
   };
+
+  
+
+
+
+}
+
+
+
+export function filterCurrentSession(games: any[]): any[] {
+  if (!games || games.length === 0) return [];
+
+  // 1. Sort by Newest First (to find the start of the chain)
+  // We use a copy [...] to avoid mutating the original array
+  const sorted = [...games].sort((a, b) => b.createdAt - a.createdAt);
+
+  const session: any[] = [];
+  const SESSION_GAP_MS = 30 * 60 * 1000; // 30 Minutes
+
+  // 2. Always add the most recent game
+  session.push(sorted[0]);
+
+  // 3. Walk backwards through history
+  for (let i = 1; i < sorted.length; i++) {
+    const newerGame = sorted[i - 1];
+    const olderGame = sorted[i];
+
+    const gap = newerGame.createdAt - olderGame.createdAt;
+
+    if (gap <= SESSION_GAP_MS) {
+      // This game belongs to the same session
+      session.push(olderGame);
+    } else {
+      // Gap is too large, session boundary reached. Stop.
+      break;
+    }
+  }
+
+  // Return the session games (order doesn't strictly matter here, but keeping Newest->Oldest is fine)
+  return session;
 }
