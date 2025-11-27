@@ -6,11 +6,11 @@ import sys
 # 1. Explicitly set path so Python finds the SDK in the same folder
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
-from api.py_tilt.tilt_model_sdk import TiltModel
+# FIX: Direct import because we added the path above
+from tilt_model_sdk import TiltModel
 
 # --- WARM START ---
 # Load the global model once when the server boots
-# Note: Your new SDK uses 'model.json' (XGBoost) instead of 'model.joblib'
 model_file = 'model.json'
 model_path = os.path.join(os.path.dirname(__file__), model_file)
 
@@ -27,14 +27,12 @@ except Exception as e:
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_len = int(self.headers.get('content-length', 0))
-        body = self.rfile.read(content_len)
-        
         try:
+            content_len = int(self.headers.get('content-length', 0))
+            body = self.rfile.read(content_len)
             payload = json.loads(body)
             
             # Input: List of PRE-ANALYZED games from the browser
-            # Structure: [{ "my_acpl": 45, "my_avg_secs_per_move": 5.2, ... }, ... ]
             games = payload.get("games", [])
             personal_model_b64 = payload.get("personal_model", None)
             
@@ -44,7 +42,6 @@ class handler(BaseHTTPRequestHandler):
             if personal_model_b64:
                 try:
                     # Attempt to load user-specific fine-tuned model
-                    # Note: Ensure you added 'load_from_base64' to your new SDK!
                     temp_ai = TiltModel()
                     if hasattr(temp_ai, 'load_from_base64'):
                         temp_ai.load_from_base64(personal_model_b64)
@@ -58,17 +55,14 @@ class handler(BaseHTTPRequestHandler):
             if tilt_ai is None:
                 if global_tilt_ai.model is not None:
                     tilt_ai = global_tilt_ai
-                    print("Using Global Model.")
                 else:
                     # Failsafe: No models available
                     print("No models available. Returning neutral score.")
-                    response = {
+                    self.send_json(200, {
                         "stop_probability": 0.0, 
                         "reason": "System initializing (Model not loaded)",
-                        "should_stop": False,
-                        "features": {}
-                    }
-                    self.send_json(200, response)
+                        "should_stop": False
+                    })
                     return
 
             # 2. Validate Data
@@ -81,7 +75,6 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             # 3. Predict
-            # The SDK's predict() method handles enrichment (rolling averages) internally
             result = tilt_ai.predict(games)
             
             if result is None:
