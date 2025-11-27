@@ -34,22 +34,13 @@ def preprocess_and_predict(games):
 
     from tilt_model_sdk import TiltModel
     
-    # Initialize helper
     helper = TiltModel() 
     df = helper._enrich_json(games)
     
     if df.empty:
         return 0.0
-        
-    # --- DEBUG LOGGING ---
-    last_game = df.iloc[-1]
-    print("\n--- 🔍 MODEL INPUT DEBUG ---")
-    print(f"Game Time: {last_game['created_at']}")
-    print(f"Result (1=Win, 0=Loss): {last_game['result']}")
-    print(f"My ACPL: {last_game['my_acpl']}")
-    print(f"Duration: {last_game['my_avg_secs_per_move']:.1f}s/move")
-    print("----------------------------\n")
-    # ---------------------
+
+    # ... logging code (optional) ...
 
     X = df[helper.feature_cols].values.astype(np.float32)
     
@@ -57,14 +48,34 @@ def preprocess_and_predict(games):
     inputs = {input_name: X}
     
     res = onnx_session.run(None, inputs)
+    
+    # res[0] is usually labels
+    # res[1] is probabilities
     probs = res[1] 
     
-    # Handle list of maps [{0:x, 1:y}] OR dict {0:x, 1:y} depending on ONNX version
-    if isinstance(probs, list):
-        last_game_prob = probs[-1][1]
-    else:
-        # Sometimes it returns a single map if batch size is 1, though usually list
-        last_game_prob = probs[1]
+    # --- ROBUST PROBABILITY EXTRACTION ---
+    try:
+        # Case 1: NumPy Array (Standard for XGBoost -> ONNX without ZipMap)
+        # Shape is usually (N_rows, 2_classes). We want last row, 2nd column (Class 1)
+        if hasattr(probs, 'shape'):
+            last_game_prob = probs[-1, 1]
+            
+        # Case 2: List of Dictionaries (Standard for sklearn-onnx with ZipMap)
+        # Structure: [{0: 0.9, 1: 0.1}, ...]
+        elif isinstance(probs, list):
+            last_game_prob = probs[-1][1]
+            
+        # Case 3: Single Dictionary (Edge case)
+        elif isinstance(probs, dict):
+            last_game_prob = probs[1]
+            
+        else:
+            print(f"Unknown probability format: {type(probs)}")
+            last_game_prob = 0.0
+
+    except Exception as e:
+        print(f"Error parsing probability: {e}. Raw data: {probs}")
+        last_game_prob = 0.0
 
     return float(last_game_prob)
 
