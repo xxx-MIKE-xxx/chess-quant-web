@@ -88,32 +88,36 @@ export function extractBasicStats(game: any, username: string) {
 export function filterCurrentSession(games: any[]): any[] {
   if (!games || games.length === 0) return [];
 
-  // 1. Sort by Newest First (to find the start of the chain)
-  // We use a copy [...] to avoid mutating the original array
   const sorted = [...games].sort((a, b) => b.createdAt - a.createdAt);
+  const newestGame = sorted[0];
+
+  // --- NEW LOGIC: THE "NOW" CHECK ---
+  const NOW = Date.now();
+  const MAX_SESSION_AGE = 60 * 60 * 1000; // 60 Minutes
+
+  // If the newest game is older than 60 mins, there is NO current session.
+  if (NOW - newestGame.createdAt > MAX_SESSION_AGE) {
+    return []; // Return empty -> Tilt Score 0
+  }
 
   const session: any[] = [];
-  const SESSION_GAP_MS = 30 * 60 * 1000; // 30 Minutes
+  const CHAIN_GAP_MS = 30 * 60 * 1000; // 30 mins between games
 
-  // 2. Always add the most recent game
-  session.push(sorted[0]);
+  // 1. Add the newest game (we know it's recent enough)
+  session.push(newestGame);
 
-  // 3. Walk backwards through history
+  // 2. Walk backwards to find the chain
   for (let i = 1; i < sorted.length; i++) {
     const newerGame = sorted[i - 1];
     const olderGame = sorted[i];
-
     const gap = newerGame.createdAt - olderGame.createdAt;
 
-    if (gap <= SESSION_GAP_MS) {
-      // This game belongs to the same session
+    if (gap <= CHAIN_GAP_MS) {
       session.push(olderGame);
     } else {
-      // Gap is too large, session boundary reached. Stop.
       break;
     }
   }
 
-  // Return the session games (order doesn't strictly matter here, but keeping Newest->Oldest is fine)
   return session;
 }

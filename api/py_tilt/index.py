@@ -32,41 +32,40 @@ def preprocess_and_predict(games):
     if not onnx_session:
         raise Exception("Model not initialized")
 
-    # 1. Convert JSON to DataFrame (same as before)
-    # NOTE: You can reuse your tilt_model_sdk.py logic IF you remove 'import xgboost' from the top of that file.
-    # For safety, I will assume we call the SDK but wrap the import.
     from tilt_model_sdk import TiltModel
     
-    # Initialize helper just for data processing methods
+    # Initialize helper
     helper = TiltModel() 
     df = helper._enrich_json(games)
     
     if df.empty:
         return 0.0
         
-    # 2. Extract Features
-    # Ensure this matches the training order EXACTLY
+    # --- DEBUG LOGGING ---
+    last_game = df.iloc[-1]
+    print("\n--- 🔍 MODEL INPUT DEBUG ---")
+    print(f"Game Time: {last_game['created_at']}")
+    print(f"Result (1=Win, 0=Loss): {last_game['result']}")
+    print(f"My ACPL: {last_game['my_acpl']}")
+    print(f"Duration: {last_game['my_avg_secs_per_move']:.1f}s/move")
+    print("----------------------------\n")
+    # ---------------------
+
     X = df[helper.feature_cols].values.astype(np.float32)
     
-    # 3. ONNX Inference
     input_name = onnx_session.get_inputs()[0].name
-    # ONNX returns a list of outputs (usually [label, probabilities])
-    # XGBoost converted models usually return [label, probability_tensor]
     inputs = {input_name: X}
     
-    # Run prediction
-    # Result format depends on converter, usually [label, probs]
-    # For XGBoost binary classifier:
-    # res[0] = label (0 or 1)
-    # res[1] = probability map (list of dicts) OR raw probability tensor
     res = onnx_session.run(None, inputs)
-    
-    # Extract probability of class 1 (Tilt)
-    # The structure of `res` varies slightly by converter version. 
-    # Usually res[1] is a list of maps: [{0: 0.9, 1: 0.1}, ...]
     probs = res[1] 
-    last_game_prob = probs[-1][1] # Probability of class 1 for the last row
     
+    # Handle list of maps [{0:x, 1:y}] OR dict {0:x, 1:y} depending on ONNX version
+    if isinstance(probs, list):
+        last_game_prob = probs[-1][1]
+    else:
+        # Sometimes it returns a single map if batch size is 1, though usually list
+        last_game_prob = probs[1]
+
     return float(last_game_prob)
 
 class handler(BaseHTTPRequestHandler):

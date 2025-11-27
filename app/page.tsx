@@ -7,8 +7,7 @@ import { ProGate } from "@/components/ProGate";
 import { FeatureCard } from "@/components/FeatureCard";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { useAnalysisQueue } from "@/lib/hooks/useAnalysisQueue";
-// import { TiltChart } from "@/components/TiltChart"; 
-import type { ProcessedGame } from "@/lib/chess/gameProcessor";
+import { type ProcessedGame, filterCurrentSession } from "@/lib/chess/gameProcessor";
 
 type User = {
   lichessId: string;
@@ -109,22 +108,29 @@ export default function HomePage() {
   }, [rawGames, analyzedGames, isAnalyzing, user]);
 
   async function runTiltAnalysis() {
-     if (loadingTilt) return;
-     
-     // Clear previous errors
-     setError(null);
-     setLoadingTilt(true);
-     
-     try {
-        // Send purely the analyzed stats to Python
-        const res = await fetch('/api/py_tilt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                games: analyzedGames, 
-                personal_model: null 
-            })
-        });
+    if (loadingTilt) return;
+    
+    // 1. Filter locally first
+    const currentSessionGames = filterCurrentSession(analyzedGames);
+
+    // 2. If empty, clear score and stop
+    if (currentSessionGames.length === 0) {
+       setTiltScore(0); // Reset to "Neutral"
+       return;
+    }
+
+    setError(null);
+    setLoadingTilt(true);
+    
+    try {
+       const res = await fetch('/api/py_tilt', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({ 
+               games: currentSessionGames, // Only send relevant games
+               personal_model: null 
+           })
+       });
 
         if (!res.ok) {
             const text = await res.text();
