@@ -1,101 +1,134 @@
 // public/stockfish-worker.js
 
-importScripts('/stockfish/stockfish.js'); // Load the engine
+// Load the engine file
+importScripts('/stockfish/stockfish.js');
 
+// Initialize the engine
 const engine = typeof Stockfish === 'function' ? Stockfish() : new Worker('/stockfish/stockfish.js');
 
 // State to track analysis
 let currentJob = null;
 
+// --- 1. LISTEN FOR ENGINE OUTPUT ---
 engine.onmessage = function(event) {
   const line = event.data;
   
   if (line.startsWith('bestmove') && currentJob) {
-    // Move finished analyzing
     processBestMove(line);
-  } else if (line.indexOf('info depth') > -1 && line.indexOf('score cp') > -1) {
-    // Evaluation update
+  } 
+  else if (line.indexOf('info depth') > -1 && line.indexOf('score') > -1) {
     processEval(line);
   }
 };
 
+// --- 2. PARSE EVALUATION ---
 function processEval(line) {
   if (!currentJob) return;
   
-  // Extract centipawn score (e.g. "score cp 45")
   const match = line.match(/score cp (-?\d+)/);
   if (match) {
     currentJob.currentEval = parseInt(match[1]);
   }
-  // Handle mate scores ("score mate 3") -> treat as +/- 1000 cp
+  
   const mateMatch = line.match(/score mate (-?\d+)/);
   if (mateMatch) {
     const mateIn = parseInt(mateMatch[1]);
-    currentJob.currentEval = mateIn > 0 ? 1000 : -1000;
+    currentJob.currentEval = mateIn > 0 ? 2000 : -2000;
   }
 }
 
+// --- 3. HANDLE MOVE COMPLETION ---
 function processBestMove(line) {
   if (!currentJob) return;
 
-  // Store evaluation for this move
   currentJob.evals.push(currentJob.currentEval);
-  
-  // Move to next ply
   currentJob.plyIndex++;
   
   if (currentJob.plyIndex < currentJob.moves.length) {
-    // Analyze next move
     analyzeNextMove();
   } else {
-    // FINISHED: Calculate Stats
+    // DONE
     const result = calculateStats(currentJob.evals, currentJob.color);
-    postMessage({ type: 'COMPLETE', result });
+    
+    postMessage({ 
+      type: 'COMPLETE', 
+      result, 
+      gameId: currentJob.gameId,
+      originalGame: currentJob.originalGame // <--- THIS WAS MISSING
+    });
+    
     currentJob = null;
   }
 }
 
+// --- 4. TRIGGER ANALYSIS ---
 function analyzeNextMove() {
-  // Setup board state for the current move
-  // NOTE: Ideally we replay moves on internal board. 
-  // For simplicity MVP, we rely on FENs or assume `position startpos moves ...` works incrementally
-  
   const movesSoFar = currentJob.moves.slice(0, currentJob.plyIndex + 1).join(' ');
   engine.postMessage(`position startpos moves ${movesSoFar}`);
-  engine.postMessage('go depth 10'); // Fast depth for tilt detection
+  engine.postMessage('go depth 10'); 
 }
 
+// --- 5. CALCULATE METRICS ---
 function calculateStats(evals, userColor) {
   let totalCPL = 0;
   let blunders = 0;
   let moveCount = 0;
+  const isWhite = userColor === 'white';
 
-  // Compare eval[i] vs eval[i-1]
-  // Note: This is simplified. Proper ACPL requires comparing Engine Best vs Player Move.
-  // For "Tilt Detection" proxy, we check "Did evaluation drop massively after MY move?"
-  
-  // ... Calculation logic ...
-  // We will implement robust logic here in next iteration
-  
+  for (let i = 0; i < evals.length; i++) {
+    const isWhiteMove = i % 2 === 0;
+    const isUserMove = (isWhite && isWhiteMove) || (!isWhite && !isWhiteMove);
+
+    if (isUserMove && i > 0) {
+      const prevEval = evals[i-1];
+      const currEval = evals[i];
+      
+      let loss = 0;
+      if (isWhite) {
+        loss = prevEval - currEval;
+      } else {
+        loss = currEval - prevEval;
+      }
+      
+      if (loss < 0) loss = 0;
+      const cappedLoss = Math.min(loss, 300);
+
+      totalCPL += cappedLoss;
+      
+      if (loss > 300) {
+        blunders++;
+      }
+      moveCount++;
+    }
+  }
+
+  const acpl = moveCount > 0 ? Math.round(totalCPL / moveCount) : 0;
+
   return {
-    acpl: 45, // Placeholder
-    blunders: 2,
+    acpl: acpl,
+    blunders: blunders,
     raw_evals: evals
   };
 }
 
+// --- 6. MAIN LISTENER ---
 onmessage = function(e) {
-  const { type, pgn, userColor } = e.data;
+  // FIX: Destructure originalGame here
+  const { type, pgn, userColor, gameId, originalGame } = e.data; 
+  
   if (type === 'ANALYZE') {
-    // Reset engine
     engine.postMessage('uci');
     engine.postMessage('isready');
+    engine.postMessage('ucinewgame');
     
-    // Parse PGN to moves list (Simple space split for MVP)
-    // Real implementation needs a PGN parser library
-    const moves = pgn.replace(/\d+\./g, '').split(/\s+/).filter(m => m.length > 1);
+    const cleanPgn = pgn.replace(/\{.*?\}/g, '').replace(/\d+\./g, '').replace(/1-0|0-1|1\/2-1\/2/g, '').trim();
+    const moves = cleanPgn.split(/\s+/).filter(m => m.length >= 2);
+
+    console.log(`[Worker] Starting analysis for ${gameId}`);
 
     currentJob = {
+      gameId: gameId,
+      originalGame: originalGame, // FIX: Store it in the job
       moves: moves,
       color: userColor,
       plyIndex: 0,

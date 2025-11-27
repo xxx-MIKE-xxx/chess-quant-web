@@ -1,86 +1,100 @@
 import { useEffect, useRef, useState } from "react";
-import { db } from "@/lib/firebaseClient"; 
-import { collection, query, where, limit, getDocs, doc, updateDoc, onSnapshot } from "firebase/firestore";
+import { parseClockFromPgn, extractBasicStats, ProcessedGame } from "@/lib/chess/gameProcessor";
 
-export function useAnalysisQueue(username: string | undefined | null) {
+const CACHE_KEY = "chess_quant_history_v1";
+
+export function useAnalysisQueue() {
+  const [analyzedGames, setAnalyzedGames] = useState<ProcessedGame[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const workerRef = useRef<Worker | null>(null);
-  const [queueLength, setQueueLength] = useState(0);
 
-  // 1. Initialize Worker on Mount
+  // 1. Load Cache on Mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        try {
+          setAnalyzedGames(JSON.parse(cached));
+        } catch (e) { console.error("Cache corrupt, resetting"); }
+      }
+    }
+  }, []);
+
+  // 2. Save Cache on Update
+  useEffect(() => {
+    if (analyzedGames.length > 0 && typeof window !== "undefined") {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(analyzedGames));
+    }
+  }, [analyzedGames]);
+
+  // 3. Initialize Stockfish Worker
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    // Point to the file in public/stockfish-worker.js
+    
     workerRef.current = new Worker('/stockfish-worker.js');
     
-    workerRef.current.onmessage = async (e) => {
-      const { type, result, gameId } = e.data;
+    workerRef.current.onmessage = (e) => {
+      const { type, result, gameId, originalGame } = e.data;
       
       if (type === 'COMPLETE') {
-        console.log(`[Analysis] Game ${gameId} Finished! ACPL: ${result.acpl}`);
+        // Retrieve the username we stored during analyzeGame
+        const username = localStorage.getItem("lichess_username") || "";
         
-        if (username) {
-           // Save result to Firestore
-           const gameRef = doc(db, "users", username, "games", gameId);
-           await updateDoc(gameRef, {
-             status: 'analyzed',
-             analysis: result, // { acpl, blunders, raw_evals }
-             analyzedAt: new Date().toISOString()
-           });
-        }
+        // A. Stats from Engine (Worker)
+        const { acpl, blunders } = result;
         
-        // Automatically process the next one
-        processNextGame(); 
+        // B. Stats from PGN (Main Thread)
+        const meta = extractBasicStats(originalGame, username);
+        const speed = parseClockFromPgn(originalGame.pgn || ""); // Use PGN for clocks
+
+        const finalRecord: ProcessedGame = {
+          id: gameId,
+          createdAt: meta.createdAt,
+          lastMoveAt: meta.lastMoveAt,
+          my_acpl: acpl,
+          my_blunder_count: blunders,
+          my_avg_secs_per_move: speed,
+          result: meta.result,
+          rating_diff: meta.rating_diff,
+          white_user: meta.white_user,
+          black_user: meta.black_user
+        };
+
+        // Update State (and trigger Cache save)
+        setAnalyzedGames(prev => {
+          // Deduplicate
+          if (prev.find(p => p.id === gameId)) return prev;
+          const next = [...prev, finalRecord].sort((a, b) => a.createdAt - b.createdAt);
+          return next;
+        });
+        
+        setIsAnalyzing(false); // Free up the worker
       }
     };
-
-    return () => workerRef.current?.terminate();
-  }, [username]);
-
-  // 2. Watch Queue Size (Optional UI candy)
-  useEffect(() => {
-    if (!username) return;
-    const q = query(collection(db, "users", username, "games"), where("status", "==", "raw"));
-    const unsub = onSnapshot(q, (snap) => setQueueLength(snap.size));
-    return () => unsub();
-  }, [username]);
-
-  // 3. The Processor Function
-  async function processNextGame() {
-    if (!username || !workerRef.current) return;
-    setIsAnalyzing(true);
-
-    // Fetch 1 raw game
-    const q = query(
-      collection(db, "users", username, "games"),
-      where("status", "==", "raw"),
-      limit(1)
-    );
     
-    const snap = await getDocs(q);
-    if (snap.empty) {
-      setIsAnalyzing(false);
-      console.log("[Analysis] Queue empty. Sleeping.");
-      return;
-    }
+    return () => workerRef.current?.terminate();
+  }, []);
 
-    const gameDoc = snap.docs[0];
-    const game = gameDoc.data();
+  const analyzeGame = (game: any, username: string) => {
+    if (isAnalyzing || !workerRef.current) return;
+    
+    // Save username context for the callback
+    localStorage.setItem("lichess_username", username);
 
-    console.log(`[Analysis] Starting ${game.id}...`);
+    // Double check we haven't already done this one
+    if (analyzedGames.find(g => g.id === game.id)) return;
 
-    // Lock it so other tabs don't grab it
-    await updateDoc(gameDoc.ref, { status: 'analyzing' });
-
-    // Send to Stockfish
+    setIsAnalyzing(true);
+    
+    // Send to Worker
     workerRef.current.postMessage({
       type: 'ANALYZE',
       pgn: game.moves, 
-      userColor: game.white.user?.name?.toLowerCase() === username.toLowerCase() ? 'white' : 'black',
-      gameId: gameDoc.id
+      userColor: game.players.white.user?.name?.toLowerCase() === username.toLowerCase() ? 'white' : 'black',
+      gameId: game.id,
+      originalGame: game // Pass full object so we can parse PGN in callback
     });
-  }
+  };
 
-  return { isAnalyzing, queueLength, triggerAnalysis: processNextGame };
+  return { analyzedGames, isAnalyzing, analyzeGame };
 }

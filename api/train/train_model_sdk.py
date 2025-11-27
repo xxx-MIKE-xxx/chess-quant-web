@@ -185,30 +185,30 @@ class TiltModel:
     # ------------------------------------------------------------------
     def _enrich_json(self, games_list):
         """
-        Takes a list of pre-processed game dicts (from Browser), 
-        calculates rolling features, and prepares for XGBoost.
+        Lightweight version of process_raw_data for real-time inference.
+        Assumes input is list of dicts with basic fields.
         """
         if not games_list: return pd.DataFrame()
 
         rows = []
         for g in games_list:
-            # Browser sends: { "my_acpl": 45, "my_avg_secs_per_move": 5.0 ... }
-            # We just need to ensure types and calculate rolling windows
+            created_at = pd.to_datetime(g.get('createdAt'), unit='ms', utc=True)
+            last_move = pd.to_datetime(g.get('lastMoveAt'), unit='ms', utc=True)
+            
             rows.append({
-                'created_at': pd.to_datetime(g.get('createdAt'), unit='ms', utc=True),
-                'last_move_at': pd.to_datetime(g.get('lastMoveAt'), unit='ms', utc=True),
-                'my_acpl': float(g.get('my_acpl', 50)),
-                'my_blunder_count': float(g.get('my_blunder_count', 0)),
-                'my_avg_secs_per_move': float(g.get('my_avg_secs_per_move', 10.0)),
-                'result': float(g.get('result', 0.5)),
-                'rating_diff': float(g.get('rating_diff', 0))
+                'created_at': created_at,
+                'last_move_at': last_move,
+                'my_acpl': g.get('my_acpl', 50),
+                'my_blunder_count': g.get('my_blunder_count', 0),
+                'my_avg_secs_per_move': g.get('my_avg_secs_per_move', 5.0),
+                'result': g.get('result', 0.5),
+                'rating_diff': g.get('rating_diff', 0)
             })
             
         df = pd.DataFrame(rows)
         df = df.sort_values('created_at').reset_index(drop=True)
         
-        # --- CALCULATE DERIVED FEATURES ---
-        # Session Context
+        # Session Context (Inference assumes single session context)
         df['games_played'] = df.index + 1
         df['session_pl'] = df['rating_diff'].cumsum()
         
@@ -220,13 +220,12 @@ class TiltModel:
         
         # Rolling
         df['roll_5_acpl_mean'] = df['my_acpl'].rolling(5, min_periods=1).mean().fillna(50)
-        df['roll_5_time_per_move'] = df['my_avg_secs_per_move'].rolling(5, min_periods=1).mean().fillna(10)
+        df['roll_5_time_per_move'] = df['my_avg_secs_per_move'].rolling(5, min_periods=1).mean().fillna(5)
         
-        # Speed vs Start
         first_speed = df['my_avg_secs_per_move'].iloc[0] + 0.001
         df['speed_vs_start'] = df['my_avg_secs_per_move'] / first_speed
         
-        # Time / Breaks
+        # Time
         df['prev_game_end'] = df['last_move_at'].shift(1)
         df['break_time'] = (df['created_at'] - df['prev_game_end']).dt.total_seconds()
         df['break_time'] = df['break_time'].fillna(0).clip(lower=0)

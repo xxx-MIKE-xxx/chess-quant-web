@@ -3,22 +3,25 @@ import json
 import os
 import sys
 
-# Explicit path setup
+# 1. Explicitly set path so Python finds the SDK in the same folder
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 
-from tilt_model_sdk import TiltModel
+from api.py_tilt.tilt_model_sdk import TiltModel
 
 # --- WARM START ---
-model_path = os.path.join(os.path.dirname(__file__), 'model.joblib')
+# Load the global model once when the server boots
+# Note: Your new SDK uses 'model.json' (XGBoost) instead of 'model.joblib'
+model_file = 'model.json'
+model_path = os.path.join(os.path.dirname(__file__), model_file)
+
 global_tilt_ai = TiltModel()
 
-# Try to load global model, but don't crash if missing
 try:
     if os.path.exists(model_path):
         global_tilt_ai.load(model_path)
-        print("Global model loaded.")
+        print(f"Global model '{model_file}' loaded successfully.")
     else:
-        print("Global model artifact not found on disk.")
+        print(f"Warning: Global model '{model_file}' not found on disk.")
 except Exception as e:
     print(f"Error loading global model: {e}")
 
@@ -29,6 +32,9 @@ class handler(BaseHTTPRequestHandler):
         
         try:
             payload = json.loads(body)
+            
+            # Input: List of PRE-ANALYZED games from the browser
+            # Structure: [{ "my_acpl": 45, "my_avg_secs_per_move": 5.2, ... }, ... ]
             games = payload.get("games", [])
             personal_model_b64 = payload.get("personal_model", None)
             
@@ -37,46 +43,60 @@ class handler(BaseHTTPRequestHandler):
             
             if personal_model_b64:
                 try:
-                    # Load specific user brain
+                    # Attempt to load user-specific fine-tuned model
+                    # Note: Ensure you added 'load_from_base64' to your new SDK!
                     temp_ai = TiltModel()
-                    temp_ai.load_from_base64(personal_model_b64)
-                    if temp_ai.model is not None:
-                        tilt_ai = temp_ai
-                        print("Using Personal Model.")
+                    if hasattr(temp_ai, 'load_from_base64'):
+                        temp_ai.load_from_base64(personal_model_b64)
+                        if temp_ai.model is not None:
+                            tilt_ai = temp_ai
+                            print("Using Personal Model.")
                 except Exception as e:
                     print(f"Failed to load personal model string: {e}")
 
-            # Fallback to global if personal failed or didn't exist
+            # Fallback to global model
             if tilt_ai is None:
                 if global_tilt_ai.model is not None:
                     tilt_ai = global_tilt_ai
                     print("Using Global Model.")
                 else:
-                    # CASE: No personal model AND no global model found
-                    # We return a "Neutral" response instead of crashing
+                    # Failsafe: No models available
                     print("No models available. Returning neutral score.")
                     response = {
-                        "stop_probability": 0.0, # 0.0 = No Tilt (Safe default)
-                        "reason": "Calibration needed (Play more games)",
-                        "metrics": {}
+                        "stop_probability": 0.0, 
+                        "reason": "System initializing (Model not loaded)",
+                        "should_stop": False,
+                        "features": {}
                     }
                     self.send_json(200, response)
                     return
 
             # 2. Validate Data
-            if len(games) < 3:
+            if not games:
                 self.send_json(200, {
                     "stop_probability": 0.0, 
-                    "reason": "Need more recent games to analyze"
+                    "reason": "No games provided",
+                    "should_stop": False
                 })
                 return
 
             # 3. Predict
-            result = tilt_ai.predict_latest(games)
+            # The SDK's predict() method handles enrichment (rolling averages) internally
+            result = tilt_ai.predict(games)
+            
+            if result is None:
+                 self.send_json(200, {
+                    "stop_probability": 0.0, 
+                    "reason": "Insufficient data for analysis",
+                    "should_stop": False
+                })
+                 return
+
             self.send_json(200, result)
             
         except Exception as e:
             print(f"CRITICAL ERROR: {str(e)}")
+            # Send 500 so the frontend knows something broke
             self.send_json(500, {"error": str(e)})
 
     def send_json(self, status, data):

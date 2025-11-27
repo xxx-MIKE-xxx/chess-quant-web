@@ -70,6 +70,12 @@ export async function getUserDashboard(username: string) {
 
   const tiltHistory = resultsSnap.docs.map((doc) => {
     const data = doc.data() as any;
+    let createdIso = null;
+    if (data.createdAt?.toDate) {
+      createdIso = data.createdAt.toDate().toISOString(); // It's a Timestamp
+    } else if (typeof data.createdAt === "string") {
+      createdIso = data.createdAt; // It's already an ISO string
+    }
     return {
       id: doc.id,
       tiltScore: data.tiltScore ?? null,
