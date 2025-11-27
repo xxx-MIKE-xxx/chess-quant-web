@@ -1,7 +1,7 @@
 # File: features/tilt_detector/train_model_sdk.py
 import pandas as pd
 import numpy as np
-import xgboost as xgb
+# REMOVED: import xgboost as xgb (Moved inside methods)
 import joblib
 import json
 import os
@@ -11,13 +11,16 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.metrics import roc_auc_score
 
 # --- DEFAULT PATHS ---
-BASE_DIR = Path(__file__).resolve().parents[2]
-DEFAULT_RAW_JSON = BASE_DIR / "data/eval_formatted/julio_amigo_dos_games_full_wiht_eval.json"
-DEFAULT_MODEL = BASE_DIR / "assets/tilt_model.json"
-DEFAULT_CONFIG = BASE_DIR / "assets/tilt_config.joblib"
-DEFAULT_SUMMARY = BASE_DIR / "output_analysis/tilt_detector/training_summary.txt"
+# Anchor to the current directory (api/py_tilt) where the script lives
+BASE_DIR = Path(__file__).resolve().parent
 
-# Constants for Feature Engineering
+# Point to the files that are actually DEPLOYED with the function
+DEFAULT_MODEL = BASE_DIR / "model.json"         # Fallback for local dev
+DEFAULT_CONFIG = BASE_DIR / "tilt_config.joblib" # Important: Contains thresholds/features
+
+# These are for training only (won't exist in Vercel, but valid syntax)
+DEFAULT_RAW_JSON = BASE_DIR / "training_data_placeholder.json"
+DEFAULT_SUMMARY = BASE_DIR / "training_summary.txt"
 HERO_USER = "julio_amigo_dos"
 SESSION_GAP_MINUTES = 30
 LOCAL_TZ = 'Europe/Warsaw'
@@ -186,14 +189,12 @@ class TiltModel:
     def _enrich_json(self, games_list):
         """
         Takes a list of pre-processed game dicts (from Browser), 
-        calculates rolling features, and prepares for XGBoost.
+        calculates rolling features, and prepares for XGBoost/ONNX.
         """
         if not games_list: return pd.DataFrame()
 
         rows = []
         for g in games_list:
-            # Browser sends: { "my_acpl": 45, "my_avg_secs_per_move": 5.0 ... }
-            # We just need to ensure types and calculate rolling windows
             rows.append({
                 'created_at': pd.to_datetime(g.get('createdAt'), unit='ms', utc=True),
                 'last_move_at': pd.to_datetime(g.get('lastMoveAt'), unit='ms', utc=True),
@@ -248,38 +249,30 @@ class TiltModel:
     # 3. TRAINING & OPTIMIZATION
     # ------------------------------------------------------------------
     def train(self, input_path=DEFAULT_RAW_JSON, save_path=DEFAULT_MODEL):
-        """
-        End-to-End: Preprocess -> Train -> Optimize -> Save
-        """
-        # A. Preprocess
-        # Check file extension to decide mode
+        # Local import for training environment ONLY
+        import xgboost as xgb  # <--- SAFE IMPORT
+        
         if str(input_path).endswith('.json'):
             df = self.process_raw_data(input_path)
         else:
             print(f"Loading pre-processed CSV from {input_path}")
             df = pd.read_csv(input_path)
 
-        # Validation
         missing = [c for c in self.feature_cols if c not in df.columns]
         if missing:
             raise ValueError(f"Missing features: {missing}")
             
         X = df[self.feature_cols]
         y = df['target']
-        groups = df['session_id']
         
         print(f"Training on {len(df)} games...")
-        
-        # B. Train
         self.model = xgb.XGBClassifier(**self.params)
         self.model.fit(X, y)
         
-        # C. Optimize
         print("Optimizing Threshold...")
         df['tilt_prob'] = self.model.predict_proba(X)[:, 1]
         best_thresh, best_pl, improvement = self._optimize_threshold(df)
         
-        # D. Save
         self.config = {
             'features': self.feature_cols,
             'params': self.params,
@@ -289,13 +282,10 @@ class TiltModel:
         self.save(save_path)
         self._save_summary(df, best_thresh, best_pl, improvement)
         
-        print(f"✅ Training Complete.")
-        print(f"   Best Threshold: {best_thresh:.2f}")
-        print(f"   Est. Gain: {improvement:+.0f}")
+        print(f"✅ Training Complete. Best Thresh: {best_thresh:.2f}, Gain: {improvement:+.0f}")
 
     def _optimize_threshold(self, df):
         if 'rating_diff' not in df.columns: return 0.5, 0, 0
-        
         thresholds = np.arange(0.30, 0.90, 0.02)
         baseline = df['rating_diff'].sum()
         best_pl = -float('inf')
@@ -306,11 +296,8 @@ class TiltModel:
             for _, grp in df.groupby('session_id'):
                 stops = grp.index[grp['tilt_prob'] > t]
                 if not stops.empty:
-                    # Stop AFTER this game
                     idx = stops[0]
                     g_reset = grp.reset_index()
-                    # Find local index of the global index 'idx'
-                    # Safe approach: boolean mask
                     local_mask = g_reset['index'] == idx
                     if local_mask.any():
                         stop_loc = local_mask.idxmax()
@@ -318,11 +305,9 @@ class TiltModel:
                         sim_pl += played['rating_diff'].sum()
                 else:
                     sim_pl += grp['rating_diff'].sum()
-            
             if sim_pl > best_pl:
                 best_pl = sim_pl
                 best_t = t
-                
         return best_t, best_pl, (best_pl - baseline)
 
     def _save_summary(self, df, thresh, pl, improve):
@@ -332,7 +317,7 @@ class TiltModel:
         with open(summary_path, 'w') as f: f.write(txt)
 
     # ------------------------------------------------------------------
-    # 4. PREDICTION & EXPLAINABILITY
+    # 4. PREDICTION & EXPLAINABILITY (LEGACY / OFFLINE)
     # ------------------------------------------------------------------
     def predict(self, session_history_json):
         if self.model is None: raise ValueError("Model not loaded.")
@@ -370,6 +355,9 @@ class TiltModel:
         joblib.dump(self.config, model_path.parent / "tilt_config.joblib")
 
     def load(self, model_path=DEFAULT_MODEL):
+        # Local import so PROD doesn't crash on load (prod uses ONNX)
+        import xgboost as xgb  # <--- SAFE IMPORT
+
         model_path = Path(model_path)
         if not model_path.exists(): raise FileNotFoundError(f"Model not found: {model_path}")
         self.model = xgb.XGBClassifier()
@@ -380,7 +368,5 @@ class TiltModel:
             self.feature_cols = self.config.get('features', self.feature_cols)
 
 if __name__ == "__main__":
-    # Example: Run pipeline on Raw JSON directly
     model = TiltModel()
-    # model.train(DEFAULT_RAW_JSON) # Uncomment to run full pipeline
-    # model.explain_feature_importance()
+    # model.train(DEFAULT_RAW_JSON)
