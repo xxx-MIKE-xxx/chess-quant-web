@@ -1,26 +1,20 @@
 # File: features/tilt_detector/train_model_sdk.py
 import pandas as pd
 import numpy as np
-# REMOVED: import xgboost as xgb (Moved inside methods)
-import joblib
 import json
 import os
 import pytz
 from pathlib import Path
-from sklearn.model_selection import StratifiedGroupKFold
-from sklearn.metrics import roc_auc_score
 
 # --- DEFAULT PATHS ---
-# Anchor to the current directory (api/py_tilt) where the script lives
+# Anchor to the current directory (api/py_tilt)
 BASE_DIR = Path(__file__).resolve().parent
-
-# Point to the files that are actually DEPLOYED with the function
-DEFAULT_MODEL = BASE_DIR / "model.json"         # Fallback for local dev
-DEFAULT_CONFIG = BASE_DIR / "tilt_config.joblib" # Important: Contains thresholds/features
-
-# These are for training only (won't exist in Vercel, but valid syntax)
-DEFAULT_RAW_JSON = BASE_DIR / "training_data_placeholder.json"
+DEFAULT_MODEL = BASE_DIR / "model.json"
+DEFAULT_CONFIG = BASE_DIR / "tilt_config.joblib"
+DEFAULT_RAW_JSON = BASE_DIR / "training_placeholder.json"
 DEFAULT_SUMMARY = BASE_DIR / "training_summary.txt"
+
+# Constants
 HERO_USER = "julio_amigo_dos"
 SESSION_GAP_MINUTES = 30
 LOCAL_TZ = 'Europe/Warsaw'
@@ -31,7 +25,6 @@ class TiltModel:
         self.model = None
         self.config = {}
         
-        # Features used by the model
         self.feature_cols = [
             'my_acpl', 'my_blunder_count', 'my_avg_secs_per_move', 'result',
             'games_played', 'speed_vs_start', 'session_pl', 'loss_streak',
@@ -40,7 +33,6 @@ class TiltModel:
             'tod_morning', 'tod_midday', 'tod_evening', 'tod_night'
         ]
         
-        # Stabilized Hyperparameters
         self.params = {
             'objective': 'binary:logistic',
             'eval_metric': 'auc',
@@ -56,9 +48,6 @@ class TiltModel:
             'random_state': 42
         }
 
-    # ------------------------------------------------------------------
-    # 1. DATA PREPARATION (Raw JSON -> Training DF)
-    # ------------------------------------------------------------------
     def _assign_time_of_day(self, hour):
         if 5 <= hour < 9: return 'morning'
         elif 9 <= hour < 18: return 'midday'
@@ -66,10 +55,6 @@ class TiltModel:
         else: return 'night'
 
     def process_raw_data(self, json_path):
-        """
-        Full ETL Pipeline: Loads Raw JSON, cleans, engineers features, and labels target.
-        Returns a DataFrame ready for training.
-        """
         print(f"--- Processing Raw Data from {json_path} ---")
         if not os.path.exists(json_path):
             raise FileNotFoundError(f"{json_path} not found.")
@@ -77,15 +62,10 @@ class TiltModel:
         with open(json_path, 'r') as f:
             data = json.load(f)
         
-        # Flatten
         df = pd.json_normalize(data, sep='_')
-        print(f"Loaded {len(df)} raw games.")
 
-        # --- A. Basic Extraction ---
-        # 1. User Color & Ratings
+        # Basic Extraction
         df['user_color'] = np.where(df['players_white_user_name'] == HERO_USER, 'white', 'black')
-        
-        # 2. ACPL / Blunders
         df['my_acpl'] = np.where(df['user_color'] == 'white', 
                                  df.get('players_white_analysis_acpl', np.nan), 
                                  df.get('players_black_analysis_acpl', np.nan))
@@ -93,65 +73,52 @@ class TiltModel:
                                           df.get('players_white_analysis_blunder', np.nan), 
                                           df.get('players_black_analysis_blunder', np.nan))
         
-        # 3. P/L (Rating Diff)
         w_diff = df.get('players_white_ratingDiff', 0).fillna(0)
         b_diff = df.get('players_black_ratingDiff', 0).fillna(0)
         df['rating_diff'] = np.where(df['user_color'] == 'white', w_diff, b_diff)
         
-        # 4. Result
         conditions = [ df['winner'] == df['user_color'], df['winner'].isna() ]
         choices = [1.0, 0.5]
         df['result'] = np.select(conditions, choices, default=0.0)
         
-        # 5. Time Calculation
         df['created_at'] = pd.to_datetime(df['createdAt'], unit='ms', utc=True)
         df['last_move_at'] = pd.to_datetime(df['lastMoveAt'], unit='ms', utc=True)
         df['game_duration_sec'] = (df['last_move_at'] - df['created_at']).dt.total_seconds()
         
-        # Count moves
         df['moves_list'] = df['moves'].fillna("").apply(lambda x: x.split(" "))
         df['move_count'] = df['moves_list'].apply(lambda x: len(x) // 2)
         df['my_avg_secs_per_move'] = df['game_duration_sec'] / df['move_count'].replace(0, 1)
 
-        # --- B. Session & Advanced Features ---
+        # Session & Advanced
         df = df.sort_values('created_at').reset_index(drop=True)
-        
-        # 1. Session ID
         df['time_diff'] = df['created_at'].diff()
         df['is_new_session'] = (df['time_diff'] > pd.Timedelta(minutes=SESSION_GAP_MINUTES)) | (df['time_diff'].isna())
         df['session_id'] = df['is_new_session'].cumsum()
         
         grp = df.groupby('session_id')
-        
-        # 2. Games Played & Session P/L
         df['games_played'] = grp.cumcount() + 1
         df['session_pl'] = grp['rating_diff'].cumsum()
         df['session_cum_pl'] = df['session_pl']
         
-        # 3. Speed vs Start
         first_speed = grp['my_avg_secs_per_move'].transform('first')
         df['speed_vs_start'] = df['my_avg_secs_per_move'] / (first_speed + 0.001)
         
-        # 4. Loss Streak
         df['is_loss'] = (df['result'] == 0.0).astype(int)
         streak_group = (df['is_loss'] == 0).cumsum()
         df['loss_streak'] = df.groupby(streak_group).cumcount()
         df.loc[df['is_loss'] == 0, 'loss_streak'] = 0
         
-        # 5. Rolling Features
         acpl_safe = df['my_acpl'].fillna(0)
         df['roll_5_acpl_mean'] = grp['my_acpl'].transform(lambda x: acpl_safe.rolling(5).mean())
         df['roll_5_time_per_move'] = grp['my_avg_secs_per_move'].transform(lambda x: x.rolling(5).mean())
         df[['roll_5_acpl_mean', 'roll_5_time_per_move']] = df[['roll_5_acpl_mean', 'roll_5_time_per_move']].fillna(0)
 
-        # --- C. Time Features ---
-        # 1. Break Time (Log)
+        # Time Features
         df['prev_game_end'] = grp['last_move_at'].shift(1)
         df['break_time'] = (df['created_at'] - df['prev_game_end']).dt.total_seconds()
         df['break_time'] = df['break_time'].fillna(0.0).clip(lower=0)
         df['log_break_time'] = np.log1p(df['break_time'])
         
-        # 2. Time of Day (One-Hot)
         try:
             tz = pytz.timezone(self.local_tz)
             local_time = df['created_at'].dt.tz_convert(tz)
@@ -167,30 +134,18 @@ class TiltModel:
                 tod_dummies[col_name] = 0
         df = pd.concat([df, tod_dummies], axis=1)
 
-        # --- D. Cleaning & Target ---
-        # Drop missing analysis
+        # Target
         df_clean = df.dropna(subset=['my_acpl', 'my_blunder_count']).copy()
-        
-        # Calculate Target (Ideal Stop)
         session_max = df_clean.groupby('session_id')['session_cum_pl'].transform('max')
         df_clean['is_max'] = (df_clean['session_cum_pl'] == session_max)
-        
         target_indices = df_clean[df_clean['is_max']].groupby('session_id')['games_played'].idxmin()
-        
         df_clean['target'] = 0
         df_clean.loc[target_indices, 'target'] = 1
         
-        print(f"Data Processed. {len(df_clean)} rows ready for training.")
+        print(f"Data Processed. {len(df_clean)} rows ready.")
         return df_clean
 
-    # ------------------------------------------------------------------
-    # 2. INFERENCE HELPERS (Raw List -> DataFrame)
-    # ------------------------------------------------------------------
     def _enrich_json(self, games_list):
-        """
-        Takes a list of pre-processed game dicts (from Browser), 
-        calculates rolling features, and prepares for XGBoost/ONNX.
-        """
         if not games_list: return pd.DataFrame()
 
         rows = []
@@ -208,26 +163,20 @@ class TiltModel:
         df = pd.DataFrame(rows)
         df = df.sort_values('created_at').reset_index(drop=True)
         
-        # --- CALCULATE DERIVED FEATURES ---
-        # Session Context
         df['games_played'] = df.index + 1
         df['session_pl'] = df['rating_diff'].cumsum()
         
-        # Streak
         df['is_loss'] = (df['result'] == 0.0).astype(int)
         streak_group = (df['is_loss'] == 0).cumsum()
         df['loss_streak'] = df.groupby(streak_group).cumcount()
         df.loc[df['is_loss'] == 0, 'loss_streak'] = 0
         
-        # Rolling
         df['roll_5_acpl_mean'] = df['my_acpl'].rolling(5, min_periods=1).mean().fillna(50)
         df['roll_5_time_per_move'] = df['my_avg_secs_per_move'].rolling(5, min_periods=1).mean().fillna(10)
         
-        # Speed vs Start
         first_speed = df['my_avg_secs_per_move'].iloc[0] + 0.001
         df['speed_vs_start'] = df['my_avg_secs_per_move'] / first_speed
         
-        # Time / Breaks
         df['prev_game_end'] = df['last_move_at'].shift(1)
         df['break_time'] = (df['created_at'] - df['prev_game_end']).dt.total_seconds()
         df['break_time'] = df['break_time'].fillna(0).clip(lower=0)
@@ -245,17 +194,13 @@ class TiltModel:
             
         return df
 
-    # ------------------------------------------------------------------
-    # 3. TRAINING & OPTIMIZATION
-    # ------------------------------------------------------------------
     def train(self, input_path=DEFAULT_RAW_JSON, save_path=DEFAULT_MODEL):
-        # Local import for training environment ONLY
-        import xgboost as xgb  # <--- SAFE IMPORT
+        # --- SAFE IMPORTS (Only available in Dev) ---
+        import xgboost as xgb
         
         if str(input_path).endswith('.json'):
             df = self.process_raw_data(input_path)
         else:
-            print(f"Loading pre-processed CSV from {input_path}")
             df = pd.read_csv(input_path)
 
         missing = [c for c in self.feature_cols if c not in df.columns]
@@ -265,11 +210,9 @@ class TiltModel:
         X = df[self.feature_cols]
         y = df['target']
         
-        print(f"Training on {len(df)} games...")
         self.model = xgb.XGBClassifier(**self.params)
         self.model.fit(X, y)
         
-        print("Optimizing Threshold...")
         df['tilt_prob'] = self.model.predict_proba(X)[:, 1]
         best_thresh, best_pl, improvement = self._optimize_threshold(df)
         
@@ -281,8 +224,6 @@ class TiltModel:
         }
         self.save(save_path)
         self._save_summary(df, best_thresh, best_pl, improvement)
-        
-        print(f"✅ Training Complete. Best Thresh: {best_thresh:.2f}, Gain: {improvement:+.0f}")
 
     def _optimize_threshold(self, df):
         if 'rating_diff' not in df.columns: return 0.5, 0, 0
@@ -290,7 +231,6 @@ class TiltModel:
         baseline = df['rating_diff'].sum()
         best_pl = -float('inf')
         best_t = 0.5
-        
         for t in thresholds:
             sim_pl = 0
             for _, grp in df.groupby('session_id'):
@@ -316,48 +256,29 @@ class TiltModel:
         txt = f"TILT MODEL SUMMARY\nDate: {pd.Timestamp.now()}\nRows: {len(df)}\nThreshold: {thresh:.2f}\nProj P/L: {pl:.0f}\nGain: {improve:+.0f}"
         with open(summary_path, 'w') as f: f.write(txt)
 
-    # ------------------------------------------------------------------
-    # 4. PREDICTION & EXPLAINABILITY (LEGACY / OFFLINE)
-    # ------------------------------------------------------------------
     def predict(self, session_history_json):
+        # NOTE: This legacy XGBoost method calls predict_proba, which we can't use in prod.
+        # Prod uses index.py + ONNX. This is kept for local debugging.
         if self.model is None: raise ValueError("Model not loaded.")
         df = self._enrich_json(session_history_json)
         if df.empty: return None
-        
         last_row = df.iloc[[-1]]
         X = last_row[self.feature_cols]
         prob = self.model.predict_proba(X)[0, 1]
         thresh = self.config.get('threshold', 0.5)
-        
-        return {
-            "stop_probability": float(prob),
-            "threshold": float(thresh),
-            "should_stop": bool(prob > thresh),
-            "features": X.to_dict(orient='records')[0]
-        }
+        return {"stop_probability": float(prob), "threshold": float(thresh)}
 
-    def explain_feature_importance(self, top_n=10):
-        if self.model is None: return {}
-        imp = self.model.get_booster().get_score(importance_type='weight')
-        sorted_imp = sorted(imp.items(), key=lambda x: x[1], reverse=True)
-        print(f"\n--- Top {top_n} Features ---")
-        for k, v in sorted_imp[:top_n]:
-            print(f"{k:<20}: {v}")
-        return dict(sorted_imp[:top_n])
-
-    # ------------------------------------------------------------------
-    # 5. PERSISTENCE
-    # ------------------------------------------------------------------
     def save(self, model_path):
+        import joblib # <--- SAFE IMPORT
         model_path = Path(model_path)
         model_path.parent.mkdir(parents=True, exist_ok=True)
         self.model.save_model(model_path)
         joblib.dump(self.config, model_path.parent / "tilt_config.joblib")
 
     def load(self, model_path=DEFAULT_MODEL):
-        # Local import so PROD doesn't crash on load (prod uses ONNX)
-        import xgboost as xgb  # <--- SAFE IMPORT
-
+        import xgboost as xgb # <--- SAFE IMPORT
+        import joblib # <--- SAFE IMPORT
+        
         model_path = Path(model_path)
         if not model_path.exists(): raise FileNotFoundError(f"Model not found: {model_path}")
         self.model = xgb.XGBClassifier()
@@ -369,4 +290,3 @@ class TiltModel:
 
 if __name__ == "__main__":
     model = TiltModel()
-    # model.train(DEFAULT_RAW_JSON)
